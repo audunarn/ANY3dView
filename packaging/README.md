@@ -40,6 +40,11 @@ also run from any folder. They are intentionally not part of automated release
 qualification:
 
 ```powershell
-python -m twine upload C:\Github\ANY3dView\dist\any3dview-0.4.0*
-python -m twine upload C:\Github\ANYtk3D\dist\anytk3d-0.4.0*
+python -m twine upload `
+  C:\Github\ANY3dView\dist\any3dview-0.4.0-py3-none-any.whl `
+  C:\Github\ANY3dView\dist\any3dview-0.4.0.tar.gz
+
+python -m twine upload `
+  C:\Github\ANYtk3D\dist\anytk3d-0.4.0-py3-none-any.whl `
+  C:\Github\ANYtk3D\dist\anytk3d-0.4.0.tar.gz
 ```

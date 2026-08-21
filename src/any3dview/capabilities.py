@@ -18,6 +18,18 @@ class ViewerCapabilities:
     transparency: bool = False
     geometry_changeset: bool = False
     software_fallback: bool = False
+    legacy_primitives: bool = False
+    text_hud: bool = False
+    legends: bool = False
+    camera_controls: bool = False
+    work_plane_projection: bool = False
+    hover_selection: bool = False
+    region_selection: bool = False
+    lasso_selection: bool = False
+    animation: bool = False
+    image_capture: bool = False
+    line_occlusion: bool = False
+    stippled_transparency: bool = False
 
 
 CORE_CAPABILITIES = ViewerCapabilities(

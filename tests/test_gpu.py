@@ -9,6 +9,8 @@ from any3dview import (
     MeshHandle,
     PackedOwnerTable,
     PickBinding,
+    Point3D,
+    Light,
     SectionPlane,
     SelectionConfig,
     SelectionDepth,
@@ -54,6 +56,123 @@ def test_gpu_renderer_draws_and_integer_picks(renderer):
 
     assert renderer.draw_calls == 1
     assert picked == (handle, "triangle", 0)
+    framebuffer.release()
+
+
+def test_gpu_hud_uses_cached_pillow_text_atlas(renderer):
+    from any3dview.gpu.hud import GPUHudRenderer
+
+    hud = GPUHudRenderer(renderer.ctx)
+    framebuffer = renderer.ctx.simple_framebuffer((160, 80), components=4)
+    framebuffer.clear(0.0, 0.0, 0.0, 0.0)
+    hud.begin((160, 80))
+    hud.rectangle((4, 4, 156, 76), "#60a5fa", fill="#0f172a")
+    hud.text((80, 40), "cached GPU text", "#ffffff")
+    entries = len(hud.atlas.entries)
+    hud.render(framebuffer)
+
+    assert entries == 1
+    assert any(framebuffer.read(components=4, alignment=1))
+    hud.begin((160, 80))
+    hud.text((80, 40), "cached GPU text", "#ffffff")
+    assert len(hud.atlas.entries) == entries
+
+    framebuffer.release()
+    hud.release()
+
+
+def test_gpu_hud_atlas_grows_and_evicts_dynamic_labels(renderer):
+    from any3dview.gpu.hud import _TextAtlas
+
+    atlas = _TextAtlas(renderer.ctx, size=32)
+    for index in range(120):
+        atlas.text(f"result step {index}", ("Segoe UI", 9, ""))
+    assert atlas.size > 32
+    assert atlas.entries
+    atlas.y = int(atlas.size * 0.9)
+    atlas.begin_frame()
+    assert atlas.entries == {}
+    atlas.release()
+
+
+def test_gpu_stipple_preserves_named_density_and_generated_phase():
+    from any3dview.gpu.renderer import _stipple_window, _stipple_windows
+
+    assert _stipple_window("gray12") == (0, 8, 0)
+    assert _stipple_window("gray75") == (0, 48, 0)
+    assert _stipple_window("@C:/tmp/anytk3d_12_20_32.xbm") == (12, 20, 32)
+    assert _stipple_windows("gray25", 0.25) == ((0, 16, 0), (0, 16, 0))
+    front, back = _stipple_windows("", 0.5)
+    assert front == (0, 32, 0)
+    assert back == (32, 16, 0)
+
+
+def test_gpu_lighting_uses_specular_and_shininess(renderer):
+    handle = MeshHandle(mesh())
+    renderer.add_mesh(handle, lit=True)
+    framebuffer = renderer.ctx.simple_framebuffer((64, 64), components=4)
+    camera = Camera3D()
+    low = Light(ambient=0.08, diffuse=0.0, specular=0.0)
+    highlight = Light(
+        direction=Point3D(-0.64, 0.64, 0.76),
+        ambient=0.08,
+        diffuse=0.0,
+        specular=1.0,
+        shininess=24.0,
+    )
+    renderer.render(camera, (64, 64), target=framebuffer, light=low)
+    dark = framebuffer.read(viewport=(32, 32, 1, 1), components=3, alignment=1)
+    renderer.render(camera, (64, 64), target=framebuffer, light=highlight)
+    bright = framebuffer.read(viewport=(32, 32, 1, 1), components=3, alignment=1)
+    assert sum(bright) > sum(dark)
+    framebuffer.release()
+
+
+def test_gpu_renderer_layer_orders_coincident_pick_surfaces(renderer):
+    low = MeshHandle(mesh())
+    high = MeshHandle(mesh())
+    renderer.add_mesh(low, layer=2)
+    renderer.add_mesh(high, layer=20)
+
+    assert renderer.pick(32, 32, Camera3D(), (64, 64)) == (
+        high,
+        "triangle",
+        0,
+    )
+
+
+def test_gpu_renderer_uses_retained_per_triangle_colours(renderer):
+    arrays = MeshArrays(
+        np.asarray(
+            [
+                [-2.0, -0.5, 0.0], [-1.0, -0.5, 0.0], [-1.5, 0.5, 0.0],
+                [1.0, -0.5, 0.0], [2.0, -0.5, 0.0], [1.5, 0.5, 0.0],
+            ],
+            np.float32,
+        ),
+        np.asarray([[0, 1, 2], [3, 4, 5]], np.uint32),
+    )
+    handle = MeshHandle(arrays)
+    renderer.add_mesh(
+        handle,
+        cull_backface=False,
+        face_colors=("#ff0000", "#0000ff"),
+        lit=False,
+    )
+    framebuffer = renderer.ctx.simple_framebuffer((128, 128), components=4)
+    camera = Camera3D()
+    renderer.render(camera, (128, 128), target=framebuffer, shading_enabled=False)
+
+    samples = []
+    for point in (Point3D(-1.5, -0.1, 0), Point3D(1.5, -0.1, 0)):
+        projected = camera.project_point(point, 128, 128)
+        assert projected is not None
+        x, y = (int(round(value)) for value in projected)
+        samples.append(framebuffer.read(
+            viewport=(x, 127 - y, 1, 1), components=3, alignment=1
+        ))
+    assert samples[0][0] > samples[0][2]
+    assert samples[1][2] > samples[1][0]
     framebuffer.release()
 
 
@@ -155,10 +274,35 @@ def test_gpu_renderer_draws_and_picks_instanced_lines(renderer):
 
     assert renderer.draw_calls == 1
     assert renderer.pick(32, 32, Camera3D(), (64, 64)) == (handle, "line", 0)
+    assert renderer.pick(32, 38, Camera3D(), (64, 64), radius=7) == (
+        handle,
+        "line",
+        0,
+    )
     renderer.pick_dirty = True
     assert renderer.pick(
         32, 32, Camera3D(), (64, 64), SectionPlane((1, 0, 0), 2.0)
     ) is None
+    framebuffer.release()
+
+
+def test_mesh_line_policy_does_not_hide_explicit_lines(renderer):
+    arrays = MeshArrays(
+        np.asarray([[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], np.float32),
+        np.empty((0, 3), np.uint32),
+        lines=np.asarray([[0, 1]], np.uint32),
+    )
+    explicit = MeshHandle(arrays)
+    renderer.add_mesh(explicit, mesh_lines=False)
+    framebuffer = renderer.ctx.simple_framebuffer((64, 64), components=4)
+    renderer.render(Camera3D(), (64, 64), target=framebuffer, show_mesh_lines=False)
+    assert renderer.draw_calls == 1
+
+    renderer.remove_mesh(explicit)
+    outline = MeshHandle(arrays)
+    renderer.add_mesh(outline, mesh_lines=True)
+    renderer.render(Camera3D(), (64, 64), target=framebuffer, show_mesh_lines=False)
+    assert renderer.draw_calls == 0
     framebuffer.release()
 
 
@@ -181,6 +325,49 @@ def test_gpu_renderer_draws_and_picks_points(renderer):
         32, 32, Camera3D(), (64, 64), SectionPlane((1, 0, 0), 1.0)
     ) is None
     framebuffer.release()
+
+
+def test_gpu_renderer_draws_marker_outline(renderer):
+    arrays = MeshArrays(
+        np.asarray([[0.0, 0.0, 0.0]], np.float32),
+        np.empty((0, 3), np.uint32),
+        point_indices=np.asarray([0], np.uint32),
+    )
+    handle = MeshHandle(arrays)
+    renderer.add_mesh(
+        handle,
+        point_color="#ff0000",
+        point_outline="#0000ff",
+        point_size=15.0,
+    )
+    framebuffer = renderer.ctx.simple_framebuffer((64, 64), components=4)
+    renderer.render(Camera3D(), (64, 64), target=framebuffer)
+    centre = framebuffer.read(
+        viewport=(32, 32, 1, 1), components=3, alignment=1
+    )
+    edge = framebuffer.read(
+        viewport=(38, 32, 1, 1), components=3, alignment=1
+    )
+    assert centre[0] > centre[2]
+    assert edge[2] > edge[0]
+    framebuffer.release()
+
+
+def test_gpu_pick_does_not_misbind_incremental_chunks(renderer):
+    primary = MeshArrays(
+        np.asarray([[99, -1, -1], [99, 1, -1], [99, 0, 1]], np.float32),
+        np.asarray([[0, 1, 2]], np.uint32),
+    )
+    chunk = MeshArrays(
+        np.asarray([[0, -1, -1], [0, 1, -1], [0, 0, 1]], np.float32),
+        np.asarray([[0, 1, 2]], np.uint32),
+    )
+    handle = MeshHandle(primary)
+    handle.add_chunk("local", chunk)
+    renderer.add_mesh(handle)
+    camera = Camera3D()
+    camera.set_orbit(azimuth=0.0, elevation=0.0, distance=10.0)
+    assert renderer.pick(32, 32, camera, (64, 64)) is None
 
 
 def test_backend_factory_rejects_unknown_backend_before_importing_gui():
@@ -247,9 +434,9 @@ def test_gpu_cpu_selection_index_supports_visible_through_box_and_lasso():
     visible = SelectionConfig(depth=SelectionDepth.VISIBLE)
     through = SelectionConfig(depth=SelectionDepth.THROUGH)
 
-    assert [hit.key for hit in viewer.query_point(32, 32, config=visible)] == [
-        "face:1"
-    ]
+    visible_hits = viewer.query_point(32, 32, config=visible)
+    assert [hit.key for hit in visible_hits] == ["face:1", "face:2"]
+    assert [hit.visible for hit in visible_hits] == [True, False]
     assert {hit.key for hit in viewer.query_point(32, 32, config=through)} == {
         "face:1",
         "face:2",

@@ -10,7 +10,6 @@ from collections.abc import Sequence
 import numpy as np
 
 from .arrays import MeshArrays
-from .errors import GPUUnavailableError
 
 
 def build_demo_mesh(grid_size: int = 40) -> MeshArrays:
@@ -218,6 +217,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     def switch_backend(requested: str, *, initial: bool = False) -> str | None:
         """Replace the rendering widget while preserving the visible demo state."""
 
+        old_viewer = current_viewer()
+        old_state = (
+            None if old_viewer is None else old_viewer.export_view_state()
+        )
+        new_viewer = None
         try:
             new_viewer = create_viewer(
                 viewport,
@@ -240,10 +244,27 @@ def main(argv: Sequence[str] | None = None) -> None:
                 two_sided_shell=True,
             )
             new_handle.set_deformation_scale(deformation.get())
-            if section_enabled.get():
+            if old_state is not None:
+                new_viewer.apply_view_state(old_state, redraw=False)
+            elif section_enabled.get():
                 new_viewer.set_section_plane(normal=(1.0, 0.0, 0.0), offset=0.0)
-        except GPUUnavailableError as error:
-            details = "; ".join(error.diagnostics)
+            # Map the fully populated candidate above the working viewer long
+            # enough to prove that Tk allocated a drawable surface.  The old
+            # widget remains packed and untouched until this succeeds.
+            new_viewer.place(x=0, y=0, relwidth=1, relheight=1)
+            root.update_idletasks()
+            root.update()
+            if min(new_viewer.viewport_size) <= 1:
+                raise RuntimeError("candidate renderer did not allocate a drawable viewport")
+            new_viewer.place_forget()
+        except Exception as error:
+            if new_viewer is not None:
+                try:
+                    new_viewer.place_forget()
+                    new_viewer.destroy()
+                except Exception:
+                    pass
+            details = "; ".join(getattr(error, "diagnostics", ()))
             rendered_error = f"{error}{': ' + details if details else ''}"
             previous = str(state["requested"])
             backend_choice.set(label_for_backend[previous])
@@ -252,7 +273,6 @@ def main(argv: Sequence[str] | None = None) -> None:
                 messagebox.showerror("Renderer unavailable", rendered_error, parent=root)
             return rendered_error
 
-        old_viewer = current_viewer()
         if old_viewer is not None:
             old_viewer.pack_forget()
         new_viewer.pack(fill=tk.BOTH, expand=True)
@@ -271,7 +291,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         if diagnostics:
             status_text += f"   Fallback: {diagnostics}"
         status.set(status_text)
-        root.after_idle(new_viewer.fit_to_scene)
+        if old_state is None:
+            root.after_idle(new_viewer.fit_to_scene)
         return None
 
     def select_backend(_event: object = None) -> None:

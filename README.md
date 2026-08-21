@@ -14,7 +14,7 @@ without adding a second event loop.
 
 ```bash
 pip install ANY3dView
-pip install "ANY3dView[gpu]"       # ModernGL + tkinter-gl
+pip install "ANY3dView[gpu]"       # ModernGL + tkinter-gl + Pillow capture
 pip install "ANY3dView[geometry]"  # ANYgeometry adapter (Python 3.11+)
 ```
 
@@ -86,6 +86,20 @@ callback runs on the viewer's owning Tk thread.
 
 Packed CSR owner tables avoid allocating owner objects per primitive.
 `EntityHandle` or `PickOwner` values are materialized only for selection hits.
+Incremental chunks can carry their own stable primitive ownership without
+changing the legacy `handle.chunks` view:
+
+```python
+handle.add_chunk("crack-tip", local_mesh, owners=local_owner_table)
+handle.replace_chunk("crack-tip", updated_mesh)  # preserves ownership
+handle.set_chunk_ownership("crack-tip", replacement_owner_table)
+```
+
+`handle.chunk_records` and `handle.chunk_ownership(id)` expose the optional
+chunk-local table and resolver. Triangle, line and point CSR spans are checked
+against each chunk, so replacement cannot silently rebind local primitive
+indices. Passing `None` to `set_chunk_ownership()` explicitly clears the
+semantic mapping; a handle-level legacy tag remains a stable fallback binding.
 
 ## Backends
 
@@ -102,8 +116,38 @@ tries GPU first and falls back to software while retaining diagnostics.
 The GPU path provides persistent indexed buffers, frustum culling,
 camera-relative float32 positions, derivative flat normals, instanced
 screen-space lines, point markers, node and element result fields,
-deformation, active and selection masks, sorted alpha, integer point picking,
-and visible/through rectangle and lasso queries. Rendering is demand-driven.
+deformation, active masks, distinct compact selection/preselection masks for
+triangles, lines and points, sorted alpha, cached integer point picking, and
+visible/through rectangle and lasso queries. Rendering is demand-driven. Text,
+legends, rulers and interaction overlays use a cached Pillow-generated OpenGL
+atlas rather than child Tk label widgets.
+It also implements the established ANYtk3D scene surface (`add_faces`, lines,
+markers, text, shape builders, camera presets, legends, highlighting,
+animation and image capture), so existing scenes can be populated without a
+renderer-specific branch. Backend-specific pixels and Tk Canvas item IDs are
+not part of that portable contract.
+
+`tkinter-gl` 1.1 has no OpenGL 3.3 profile token: its `3_2` request caps the
+context below the renderer requirement on Windows. The host therefore requests
+the driver's legacy/compatibility context and ModernGL enforces the actual
+OpenGL 3.3 minimum. This is the tkinter-gl route that keeps 3.3--4.0 hardware
+eligible; older contexts fail with an actionable GPU initialization diagnostic.
+
+`ViewerBackend`, `ViewerCapabilities`, `Pick` and `ViewerState` describe the
+shared integration boundary. Applications can switch renderers
+transactionally by populating a candidate and copying the view policy:
+
+```python
+candidate = create_viewer(parent, backend="gpu")
+populate_scene(candidate)
+candidate.apply_view_state(current.export_view_state())
+candidate.pack(fill="both", expand=True)
+current.destroy()
+```
+
+Both bundled backends expose `backend_name`, `event_widget`, `viewport_size`,
+`project_point(s)`, `screen_ray()` and `unproject_to_plane()`. These replace
+direct access to Tk canvas dimensions or private projection methods.
 
 ## ANYgeometry adapter
 
@@ -131,9 +175,10 @@ world-space distance.
 
 ## Performance qualification
 
-The standalone benchmark records platform, driver, commit, scene, median/p95
-CPU and GPU frame times, upload and cached-pick timings, draw calls, upload
-counts and array memory as JSON:
+The standalone benchmark records platform, driver, commit plus dirty-tree GPU
+source digest, scene, median/p95 CPU and GPU frame times, upload and cached-pick
+timings, camera-motion upload deltas, Python allocation deltas, a defined
+30-second no-redraw idle sample, per-frame draw calls and array memory as JSON:
 
 ```powershell
 $env:PYTHONPATH = "C:\Github\ANY3dView\src"
@@ -143,7 +188,10 @@ python C:\Github\ANY3dView\benchmarks\run_gpu.py `
 
 It exercises approximately one million opaque triangles, the same scene with
 structural edges, one million scalar values and one million displacement
-vectors at 1920x1080 with a two-second warm-up and ten-second orbit samples.
+vectors at 1920x1080 with a two-second warm-up per render scene and ten-second
+orbit samples. Field latency is conservatively measured from the retained
+handle update through a rendered frame and an OpenGL completion barrier after
+the unchanged topology has already been synchronized.
 
 ## Development
 

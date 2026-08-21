@@ -4,13 +4,40 @@ from threading import Thread
 import numpy as np
 import pytest
 
-from any3dview import MeshArrays, MeshHandle, SelectionHit, PickOwner, ViewerCapabilities
+from any3dview import (
+    MeshArrays,
+    MeshHandle,
+    PackedOwnerTable,
+    PickOwner,
+    SelectionHit,
+    ViewerCapabilities,
+)
 
 
 def mesh():
     return MeshArrays(
         np.asarray([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32),
         np.asarray([[0, 1, 2]], dtype=np.uint32),
+    )
+
+
+def chunk_mesh():
+    return MeshArrays(
+        np.asarray(
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]],
+            dtype=np.float32,
+        ),
+        np.asarray([[0, 1, 2]], dtype=np.uint32),
+        lines=np.asarray([[0, 3]], dtype=np.uint32),
+        point_indices=np.asarray([3], dtype=np.uint32),
+    )
+
+
+def chunk_owners(prefix="chunk"):
+    return PackedOwnerTable.from_owners(
+        triangles=((PickOwner(f"{prefix}:face", "face"),),),
+        lines=((PickOwner(f"{prefix}:edge", "edge"),),),
+        points=((PickOwner(f"{prefix}:node", "node"),),),
     )
 
 
@@ -57,6 +84,115 @@ def test_retained_handle_tracks_independent_generations():
         "topology",
         "topology",
     ]
+
+
+def test_chunk_ownership_extends_records_without_changing_legacy_chunks():
+    handle = MeshHandle(mesh())
+    chunk = chunk_mesh()
+    owners = chunk_owners()
+
+    def resolver(*coordinates):
+        return coordinates
+
+    handle.add_chunk("local", chunk, owners=owners, owner_resolver=resolver)
+
+    assert len(handle.chunks) == 1
+    chunk_id, legacy_chunk = handle.chunks[0]
+    assert chunk_id == "local"
+    assert legacy_chunk is chunk
+
+    assert len(handle.chunk_records) == 1
+    record_id, record_chunk, record_owners, record_resolver = handle.chunk_records[0]
+    assert record_id == "local"
+    assert record_chunk is chunk
+    assert record_owners is owners
+    assert record_resolver is resolver
+    assert handle.chunk_ownership("local") == (owners, resolver)
+
+    # Chunk arrays follow the same explicit lifetime contract as the primary mesh:
+    # compatible arrays are retained, while callers can opt into isolated storage.
+    assert np.shares_memory(record_chunk.positions, chunk.positions)
+    source = chunk_mesh()
+    owned = source.owned_copy()
+    handle.add_chunk("owned", owned)
+    source.positions[0, 0] = 42.0
+    assert owned.positions[0, 0] == 0.0
+    assert handle.chunks[1] == ("owned", owned)
+    assert handle.chunk_ownership("owned") == (None, None)
+
+
+@pytest.mark.parametrize("primitive_kind", ("triangle", "line", "point"))
+def test_chunk_owner_mapping_lengths_must_match_each_primitive_kind(primitive_kind):
+    handle = MeshHandle(mesh())
+    owner_rows = (
+        (PickOwner(f"{primitive_kind}:1", primitive_kind),),
+        (PickOwner(f"{primitive_kind}:2", primitive_kind),),
+    )
+    table_keyword = {
+        "triangle": "triangles",
+        "line": "lines",
+        "point": "points",
+    }[primitive_kind]
+    owners = PackedOwnerTable.from_owners(**{table_keyword: owner_rows})
+
+    with pytest.raises(
+        ValueError,
+        match=rf"{primitive_kind} owner mappings must match chunk {primitive_kind} count",
+    ):
+        handle.add_chunk("invalid", chunk_mesh(), owners=owners)
+
+
+def test_chunk_owner_resolver_requires_a_packed_owner_table():
+    handle = MeshHandle(mesh())
+
+    with pytest.raises(ValueError, match="owner_resolver requires a chunk owner table"):
+        handle.add_chunk("invalid", chunk_mesh(), owner_resolver=lambda *_: None)
+    with pytest.raises(TypeError, match="owners must be a PackedOwnerTable"):
+        handle.add_chunk("invalid", chunk_mesh(), owners=object())
+
+
+def test_chunk_ownership_survives_replacement_and_can_be_replaced_or_cleared():
+    changes = []
+    handle = MeshHandle(mesh(), on_change=lambda _handle, change: changes.append(change))
+    owners = chunk_owners("original")
+    replacement_owners = chunk_owners("replacement")
+
+    def resolver(*coordinates):
+        return ("original", coordinates)
+
+    def replacement_resolver(*coordinates):
+        return ("replacement", coordinates)
+
+    handle.add_chunk("local", chunk_mesh(), owners=owners, owner_resolver=resolver)
+    replacement = chunk_mesh().owned_copy()
+    handle.replace_chunk("local", replacement)
+
+    assert handle.chunks[0][1] is replacement
+    assert handle.chunk_ownership("local") == (owners, resolver)
+    assert handle.generations.topology == 2
+    assert handle.generations.selection == 0
+
+    handle.set_chunk_ownership(
+        "local", replacement_owners, owner_resolver=replacement_resolver
+    )
+    assert handle.chunk_ownership("local") == (
+        replacement_owners,
+        replacement_resolver,
+    )
+    assert handle.generations.selection == 1
+    assert handle.generations.topology == 2
+
+    handle.set_chunk_ownership("local", None)
+    assert handle.chunk_ownership("local") == (None, None)
+    assert handle.generations.selection == 2
+
+    handle.remove_chunk("local")
+    assert handle.chunks == ()
+    assert handle.chunk_records == ()
+    assert handle.generations.topology == 3
+    with pytest.raises(KeyError):
+        handle.chunk_ownership("local")
+    assert changes == ["topology", "topology", "selection", "selection", "topology"]
 
 
 def test_remove_is_idempotent_and_other_operations_fail_afterward():

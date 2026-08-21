@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.9",
+    "numpy": "2.4.3",
+    "moderngl": "5.12.0",
+    "commit": "48dd5cbc5708c7729c14910cfbbd33a6246c5ba6",
+    "git_dirty": true,
+    "gpu_source_sha256": "bd718ab4139c5e29e4fc854856461f063a3be400630daee63de183668f0e3676",
+    "gl_vendor": "NVIDIA Corporation",
+    "gl_renderer": "NVIDIA GeForce RTX 3090 Ti/PCIe/SSE2",
+    "gl_version": "3.3.0 NVIDIA 591.86"
+  },
+  "scene": {
+    "name": "plate_grid_707x707",
+    "viewport": [
+      1920,
+      1080
+    ],
+    "nodes": 501264,
+    "triangles": 999698,
+    "elements": 499849,
+    "warmup_seconds": 2.0,
+    "sample_seconds": 10.0,
+    "vsync": false
+  },
+  "timings_ms": {
+    "scalar_upload": 8.599100052379072,
+    "displacement_upload": 32.15029998682439,
+    "initial_pick": 2.000999986194074,
+    "cached_pick_median": 0.036699988413602114
+  },
+  "timing_scope": {
+    "field_uploads": "CPU handle update through render and OpenGL finish; topology and positions were synchronized first",
+    "pick": "wall-clock call latency"
+  },
+  "metric_scope": {
+    "render_samples.draw_calls": "per-frame count from the final sampled frame; the renderer resets the counter at the start of every frame"
+  },
+  "render_samples": {
+    "opaque": {
+      "frames": 34611,
+      "measured_seconds": 10.000029799994081,
+      "fps": 3461.0896859547843,
+      "cpu_median_ms": 0.11960003757849336,
+      "cpu_p95_ms": 0.16009999671950936,
+      "gpu_median_ms": 0.109568,
+      "gpu_p95_ms": 0.11776,
+      "draw_calls": 1,
+      "geometry_uploads": 0
+    },
+    "structural_edges": {
+      "frames": 9864,
+      "measured_seconds": 10.000289700052235,
+      "fps": 986.3714248146708,
+      "cpu_median_ms": 0.14449999434873462,
+      "cpu_p95_ms": 0.19310001516714692,
+      "gpu_median_ms": 0.763904,
+      "gpu_p95_ms": 1.112064,
+      "draw_calls": 2,
+      "geometry_uploads": 0
+    }
+  },
+  "throughput": {
+    "geometry_uploads": 4,
+    "camera_motion_geometry_uploads": 0
+  },
+  "allocations": {
+    "frames": 120,
+    "python_live_blocks_delta": 634,
+    "python_live_bytes_delta": 39509,
+    "python_peak_traced_bytes": 45532
+  },
+  "idle_sample": {
+    "scope": "standalone renderer with no redraw calls",
+    "requested_seconds": 30.0,
+    "measured_seconds": 30.000323500018567,
+    "process_cpu_seconds": 0.015625,
+    "process_cpu_percent": 0.05208277170741286,
+    "rendered_frames": 0
+  },
+  "memory_bytes": {
+    "positions": 6015168,
+    "triangles": 11996376,
+    "fields": 16024012
+  },
+  "upload_scene": {
+    "nodes": 1002001,
+    "triangles": 2000000,
+    "elements": 1000000
+  },
+  "process": {
+    "pid": 37136
+  }
+}

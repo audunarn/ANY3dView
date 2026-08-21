@@ -1,8 +1,9 @@
 """Backend-neutral geometry, camera, shading, clipping and selection core."""
 
-from . import arrays, benchmarks, capabilities, clipping, core, ownership, retained, selection, shading, shapes
+from . import arrays, benchmarks, capabilities, clipping, contracts, core, ownership, retained, selection, shading, shapes
 from .arrays import MeshArrays
 from .capabilities import CORE_CAPABILITIES, ViewerCapabilities
+from .contracts import Pick, ViewerBackend, ViewerState
 from .clipping import SectionPlane
 from .core import (
     Camera3D,
@@ -34,7 +35,7 @@ from .factory import create_viewer
 from .shading import Light
 from .shapes import Mesh
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "Camera3D",
@@ -45,6 +46,8 @@ __all__ = [
     "MeshHandle",
     "DirtyGenerations",
     "ViewerCapabilities",
+    "ViewerBackend",
+    "ViewerState",
     "ViewerScheduler",
     "CORE_CAPABILITIES",
     "ApplicationOwner",
@@ -54,6 +57,7 @@ __all__ = [
     "GPUUnavailableError",
     "create_viewer",
     "PickBinding",
+    "Pick",
     "PickOwner",
     "Point3D",
     "ProjectedPrimitive",
@@ -71,6 +75,7 @@ __all__ = [
     "arrays",
     "benchmarks",
     "capabilities",
+    "contracts",
     "core",
     "get_color_stops",
     "reset_color_stops",

@@ -9,6 +9,7 @@ from typing import Callable, Hashable, Optional, Protocol
 import numpy as np
 
 from .arrays import MeshArrays
+from .ownership import PackedOwnerTable
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +37,7 @@ class MeshHandle:
     __slots__ = (
         "_mesh",
         "_chunks",
+        "_chunk_ownership",
         "_callback",
         "_owner_thread",
         "_generations",
@@ -57,6 +59,9 @@ class MeshHandle:
             raise TypeError("mesh must be MeshArrays")
         self._mesh = mesh
         self._chunks: dict[Hashable, MeshArrays] = {}
+        self._chunk_ownership: dict[
+            Hashable, tuple[Optional[PackedOwnerTable], Optional[Callable[..., object]]]
+        ] = {}
         self._callback = on_change
         self._owner_thread = get_ident() if owner_thread is None else int(owner_thread)
         self._generations = {name: 0 for name in DirtyGenerations.__dataclass_fields__}
@@ -84,6 +89,34 @@ class MeshHandle:
     @property
     def chunks(self) -> tuple[tuple[Hashable, MeshArrays], ...]:
         return tuple(self._chunks.items())
+
+    @property
+    def chunk_records(
+        self,
+    ) -> tuple[
+        tuple[
+            Hashable,
+            MeshArrays,
+            Optional[PackedOwnerTable],
+            Optional[Callable[..., object]],
+        ],
+        ...,
+    ]:
+        """Return chunk arrays and their optional chunk-local semantic owners."""
+
+        return tuple(
+            (chunk_id, mesh, *self._chunk_ownership[chunk_id])
+            for chunk_id, mesh in self._chunks.items()
+        )
+
+    def chunk_ownership(
+        self, chunk_id: Hashable
+    ) -> tuple[Optional[PackedOwnerTable], Optional[Callable[..., object]]]:
+        """Return the ownership table/resolver registered for one chunk."""
+
+        if chunk_id not in self._chunks:
+            raise KeyError(chunk_id)
+        return self._chunk_ownership[chunk_id]
 
     @property
     def generations(self) -> DirtyGenerations:
@@ -177,27 +210,99 @@ class MeshHandle:
         self._transform = np.ascontiguousarray(matrix)
         self._change("transform")
 
-    def replace_chunk(self, chunk_id: Hashable, replacement: MeshArrays) -> None:
+    @staticmethod
+    def _validate_chunk_ownership(
+        mesh: MeshArrays,
+        owners: Optional[PackedOwnerTable],
+        owner_resolver: Optional[Callable[..., object]],
+    ) -> None:
+        if owners is None:
+            if owner_resolver is not None:
+                raise ValueError("owner_resolver requires a chunk owner table")
+            return
+        if not isinstance(owners, PackedOwnerTable):
+            raise TypeError("owners must be a PackedOwnerTable")
+        for primitive_kind, total in (
+            ("triangle", mesh.triangle_count),
+            ("line", 0 if mesh.lines is None else len(mesh.lines)),
+            ("point", 0 if mesh.point_indices is None else len(mesh.point_indices)),
+        ):
+            mapped = len(getattr(owners, f"{primitive_kind}_offsets")) - 1
+            if mapped not in (0, total):
+                raise ValueError(
+                    f"{primitive_kind} owner mappings must match chunk {primitive_kind} count"
+                )
+
+    def replace_chunk(
+        self,
+        chunk_id: Hashable,
+        replacement: MeshArrays,
+        *,
+        owners: Optional[PackedOwnerTable] = None,
+        owner_resolver: Optional[Callable[..., object]] = None,
+    ) -> None:
+        """Replace arrays, preserving ownership unless a new table is supplied."""
+
         self._check()
         if chunk_id not in self._chunks:
             raise KeyError(chunk_id)
         if not isinstance(replacement, MeshArrays):
             raise TypeError("replacement must be MeshArrays")
+        current_owners, current_resolver = self._chunk_ownership[chunk_id]
+        effective_owners = current_owners if owners is None else owners
+        effective_resolver = (
+            current_resolver if owners is None and owner_resolver is None
+            else owner_resolver
+        )
+        self._validate_chunk_ownership(
+            replacement, effective_owners, effective_resolver
+        )
         self._chunks[chunk_id] = replacement
+        self._chunk_ownership[chunk_id] = (effective_owners, effective_resolver)
         self._change("topology")
 
-    def add_chunk(self, chunk_id: Hashable, chunk: MeshArrays) -> None:
+    def add_chunk(
+        self,
+        chunk_id: Hashable,
+        chunk: MeshArrays,
+        *,
+        owners: Optional[PackedOwnerTable] = None,
+        owner_resolver: Optional[Callable[..., object]] = None,
+    ) -> None:
+        """Add a chunk with optional chunk-local packed semantic ownership."""
+
         self._check()
         if chunk_id in self._chunks:
             raise KeyError(f"chunk {chunk_id!r} already exists")
         if not isinstance(chunk, MeshArrays):
             raise TypeError("chunk must be MeshArrays")
+        self._validate_chunk_ownership(chunk, owners, owner_resolver)
         self._chunks[chunk_id] = chunk
+        self._chunk_ownership[chunk_id] = (owners, owner_resolver)
         self._change("topology")
+
+    def set_chunk_ownership(
+        self,
+        chunk_id: Hashable,
+        owners: Optional[PackedOwnerTable],
+        *,
+        owner_resolver: Optional[Callable[..., object]] = None,
+    ) -> None:
+        """Replace or clear one chunk's ownership without replacing its arrays."""
+
+        self._check()
+        if chunk_id not in self._chunks:
+            raise KeyError(chunk_id)
+        self._validate_chunk_ownership(
+            self._chunks[chunk_id], owners, owner_resolver
+        )
+        self._chunk_ownership[chunk_id] = (owners, owner_resolver)
+        self._change("selection")
 
     def remove_chunk(self, chunk_id: Hashable) -> None:
         self._check()
         del self._chunks[chunk_id]
+        del self._chunk_ownership[chunk_id]
         self._change("topology")
 
     def remove(self) -> None:

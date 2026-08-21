@@ -41,20 +41,28 @@ qualification:
 
 ```powershell
 python -m twine upload `
-  C:\Github\ANY3dView\dist\any3dview-0.4.0-py3-none-any.whl `
-  C:\Github\ANY3dView\dist\any3dview-0.4.0.tar.gz
+  C:\Github\ANY3dView\dist\any3dview-0.5.0-py3-none-any.whl `
+  C:\Github\ANY3dView\dist\any3dview-0.5.0.tar.gz
 
 python -m twine upload `
-  C:\Github\ANYtk3D\dist\anytk3d-0.4.0-py3-none-any.whl `
-  C:\Github\ANYtk3D\dist\anytk3d-0.4.0.tar.gz
+  C:\Github\ANYtk3D\dist\anytk3d-0.5.0-py3-none-any.whl `
+  C:\Github\ANYtk3D\dist\anytk3d-0.5.0.tar.gz
+
+python -m twine upload `
+  C:\Github\ANYfem\dist\anyfem-0.3.0-py3-none-any.whl `
+  C:\Github\ANYfem\dist\anyfem-0.3.0.tar.gz
+
+python -m twine upload `
+  C:\Github\ANYstructure\dist\anystructure-6.3.0-py3-none-any.whl `
+  C:\Github\ANYstructure\dist\anystructure-6.3.0.tar.gz
 ```
 
 ## PyPI Trusted Publishing
 
-Both repositories contain `.github/workflows/release.yml`. A manual workflow
-run from a branch builds and validates the distributions but does not publish.
-Pushing a `v*` tag publishes only after the tag has been checked against the
-version in `pyproject.toml` and the `pypi` GitHub environment has approved the
+All four updated repositories contain a Trusted Publishing workflow. A manual
+workflow run from a branch builds and validates the distributions but does not
+publish. Pushing a `v*` tag publishes only after the tag has been checked
+against the package version and the `pypi` GitHub environment has approved the
 publishing job.
 
 Configure a PyPI GitHub Trusted Publisher for each project with these values:
@@ -63,6 +71,8 @@ Configure a PyPI GitHub Trusted Publisher for each project with these values:
 | --- | --- | --- | --- | --- |
 | ANY3dView | `audunarn` | `ANY3dView` | `release.yml` | `pypi` |
 | ANYtk3D | `audunarn` | `ANYtk3D` | `release.yml` | `pypi` |
+| ANYfem | `audunarn` | `ANYfem` | `publish.yml` | `pypi` |
+| ANYstructure | `audunarn` | `ANYstructure` | `publish.yml` | `pypi` |
 
 The workflows use short-lived OIDC credentials and do not require a
 `PYPI_API_TOKEN` repository secret. Protect the `pypi` GitHub environment with

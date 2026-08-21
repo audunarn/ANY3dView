@@ -17,14 +17,17 @@ class GLHostProtocol(Protocol):
     def swap_buffers(self) -> None: ...
     def framebuffer_size(self) -> tuple[int, int]: ...
     def request_redraw(self) -> None: ...
+    def cancel_redraw(self) -> None: ...
     def close(self) -> None: ...
 
 
 class _Surface(GLCanvas):
-    # tkinter-gl 1.1 exposes 2.1, 3.2 and 4.1 profile requests.  The renderer
-    # requires GLSL/OpenGL 3.3, so 4.1 is the first host profile that satisfies
-    # the contract; ModernGL still enforces the actual 3.3 minimum below it.
-    profile = "4_1"
+    # tkinter-gl 1.1 has no 3.3 profile token and its 3.2 token deliberately
+    # caps the context below our renderer minimum.  On Windows the legacy
+    # request exposes the driver's highest compatibility context, after which
+    # ModernGL is the authoritative OpenGL >= 3.3 gate.  This keeps 3.3--4.0
+    # hardware usable while old compatibility contexts fail diagnostically.
+    profile = "legacy"
 
     def __init__(self, parent, draw_callback: Callable[[], None], **options):
         self._draw_callback = draw_callback
@@ -41,6 +44,7 @@ class TkinterGLHost:
         self._draw_callback = draw_callback
         self._redraw_pending = False
         self._retry_id = None
+        self._draw_idle_id = None
         self.surface = _Surface(parent, self._draw_surface, **options)
 
     def _draw_surface(self) -> None:
@@ -78,18 +82,30 @@ class TkinterGLHost:
         self._redraw_pending = True
 
         def draw() -> None:
+            self._draw_idle_id = None
             if self._redraw_pending and self.surface.winfo_exists():
                 self.surface.draw()
 
-        self.surface.after_idle(draw)
+        self._draw_idle_id = self.surface.after_idle(draw)
 
-    def close(self) -> None:
+    def cancel_redraw(self) -> None:
+        """Cancel pending demand work without changing the last framebuffer."""
+
+        self._redraw_pending = False
+        if self._draw_idle_id is not None:
+            try:
+                self.surface.after_cancel(self._draw_idle_id)
+            except Exception:
+                pass
+            self._draw_idle_id = None
         if self._retry_id is not None:
             try:
                 self.surface.after_cancel(self._retry_id)
             except Exception:
                 pass
             self._retry_id = None
-        self._redraw_pending = False
+
+    def close(self) -> None:
+        self.cancel_redraw()
         if self.surface.winfo_exists():
             self.surface.destroy()

@@ -48,3 +48,22 @@ python -m twine upload `
   C:\Github\ANYtk3D\dist\anytk3d-0.4.0-py3-none-any.whl `
   C:\Github\ANYtk3D\dist\anytk3d-0.4.0.tar.gz
 ```
+
+## PyPI Trusted Publishing
+
+Both repositories contain `.github/workflows/release.yml`. A manual workflow
+run from a branch builds and validates the distributions but does not publish.
+Pushing a `v*` tag publishes only after the tag has been checked against the
+version in `pyproject.toml` and the `pypi` GitHub environment has approved the
+publishing job.
+
+Configure a PyPI GitHub Trusted Publisher for each project with these values:
+
+| Project | Owner | Repository | Workflow | Environment |
+| --- | --- | --- | --- | --- |
+| ANY3dView | `audunarn` | `ANY3dView` | `release.yml` | `pypi` |
+| ANYtk3D | `audunarn` | `ANYtk3D` | `release.yml` | `pypi` |
+
+The workflows use short-lived OIDC credentials and do not require a
+`PYPI_API_TOKEN` repository secret. Protect the `pypi` GitHub environment with
+a required reviewer and protect the `v*` tag pattern before publishing.

@@ -1,6 +1,8 @@
 """Backend-neutral geometry, camera, shading, clipping and selection core."""
 
-from . import clipping, core, selection, shading, shapes
+from . import arrays, benchmarks, capabilities, clipping, core, ownership, retained, selection, shading, shapes
+from .arrays import MeshArrays
+from .capabilities import CORE_CAPABILITIES, ViewerCapabilities
 from .clipping import SectionPlane
 from .core import (
     Camera3D,
@@ -24,16 +26,33 @@ from .selection import (
     SelectionOperation,
     SelectionTool,
 )
+from .ownership import ApplicationOwner, ModelOwner, PackedOwnerTable
+from .retained import DirtyGenerations, MeshHandle, RetainedViewer
+from .scheduler import ViewerScheduler
+from .errors import GPUUnavailableError
+from .factory import create_viewer
 from .shading import Light
 from .shapes import Mesh
 
-__version__ = "0.1.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "Camera3D",
     "DEFAULT_COLOR_STOPS",
     "Light",
     "Mesh",
+    "MeshArrays",
+    "MeshHandle",
+    "DirtyGenerations",
+    "ViewerCapabilities",
+    "ViewerScheduler",
+    "CORE_CAPABILITIES",
+    "ApplicationOwner",
+    "ModelOwner",
+    "PackedOwnerTable",
+    "RetainedViewer",
+    "GPUUnavailableError",
+    "create_viewer",
     "PickBinding",
     "PickOwner",
     "Point3D",
@@ -49,10 +68,15 @@ __all__ = [
     "SelectionOperation",
     "SelectionTool",
     "clipping",
+    "arrays",
+    "benchmarks",
+    "capabilities",
     "core",
     "get_color_stops",
     "reset_color_stops",
     "selection",
+    "ownership",
+    "retained",
     "set_color_stops",
     "shading",
     "shapes",

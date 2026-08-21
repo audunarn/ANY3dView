@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ANY3dView"
-version = "0.1.0"
+version = "0.4.0"
 description = "Backend-neutral geometry, camera, shading, clipping and selection core for scientific 3D viewers"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -25,6 +25,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Multimedia :: Graphics :: 3D Rendering",
     "Topic :: Scientific/Engineering :: Visualization",
 ]
@@ -32,6 +33,8 @@ dependencies = ["numpy"]
 
 [project.optional-dependencies]
 dev = ["pytest", "build", "twine"]
+gpu = ["moderngl>=5.12,<6", "tkinter-gl>=1.1,<2"]
+geometry = ["ANYgeometry>=0.2.2,<0.3", "mapbox-earcut>=1.0,<2"]
 
 [project.urls]
 Homepage = "https://github.com/audunarn/ANY3dView"
@@ -43,3 +46,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "gui: opt-in test that creates a real Tk/OpenGL window",
+]

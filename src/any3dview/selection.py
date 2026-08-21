@@ -54,6 +54,7 @@ class PickOwner:
     key: str
     kind: str = ""
     priority: int = 0
+    identity: object | None = field(default=None, compare=False, hash=False, repr=False)
 
     def __post_init__(self) -> None:
         if not str(self.key):
@@ -147,6 +148,15 @@ class SelectionHit:
     screen_distance: float = 0.0
     visible: bool = True
     item: int = -1
+    identity: object | None = None
+
+    def __post_init__(self) -> None:
+        if self.identity is None:
+            object.__setattr__(
+                self,
+                "identity",
+                self.owner.identity if self.owner.identity is not None else self.owner,
+            )
 
     @property
     def key(self) -> str:

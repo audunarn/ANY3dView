@@ -38,8 +38,30 @@ class TkinterGLHost:
     """GL 3.3+ context hosted in an ordinary Tk widget hierarchy."""
 
     def __init__(self, parent, draw_callback: Callable[[], None], **options) -> None:
-        self.surface = _Surface(parent, draw_callback, **options)
+        self._draw_callback = draw_callback
         self._redraw_pending = False
+        self._retry_id = None
+        self.surface = _Surface(parent, self._draw_surface, **options)
+
+    def _draw_surface(self) -> None:
+        """Draw only after Tk has mapped a non-trivial framebuffer."""
+
+        if not self.surface.winfo_exists():
+            self._redraw_pending = False
+            return
+        width, height = self.framebuffer_size()
+        if not self.surface.winfo_ismapped() or width <= 1 or height <= 1:
+            self._redraw_pending = True
+            if self._retry_id is None:
+                self._retry_id = self.surface.after(16, self._run_requested_draw)
+            return
+        self._redraw_pending = False
+        self._draw_callback()
+
+    def _run_requested_draw(self) -> None:
+        self._retry_id = None
+        if self._redraw_pending and self.surface.winfo_exists():
+            self.surface.draw()
 
     def make_current(self) -> None:
         self.surface.make_current()
@@ -56,12 +78,18 @@ class TkinterGLHost:
         self._redraw_pending = True
 
         def draw() -> None:
-            self._redraw_pending = False
-            if self.surface.winfo_exists():
+            if self._redraw_pending and self.surface.winfo_exists():
                 self.surface.draw()
 
         self.surface.after_idle(draw)
 
     def close(self) -> None:
+        if self._retry_id is not None:
+            try:
+                self.surface.after_cancel(self._retry_id)
+            except Exception:
+                pass
+            self._retry_id = None
+        self._redraw_pending = False
         if self.surface.winfo_exists():
             self.surface.destroy()

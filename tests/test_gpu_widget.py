@@ -85,6 +85,30 @@ def test_gpu_widget_demand_redraw_and_repeated_create_destroy():
     root.destroy()
 
 
+def test_gpu_first_frame_waits_until_surface_is_mapped():
+    from any3dview.gpu import Any3DView
+
+    root = tk.Tk()
+    root.geometry("320x240+0+0")
+    viewer = Any3DView(root, width=320, height=240)
+    viewer.add_mesh_arrays(_mesh())
+
+    # Exercise the race where creation-time idle work runs before the GL
+    # surface is packed. It must not consume the only requested frame.
+    root.update_idletasks()
+    assert viewer.renderer_diagnostics["frame_count"] == 0
+
+    viewer.pack(fill=tk.BOTH, expand=True)
+    root.update()
+    assert viewer._host.framebuffer_size()[0] > 1
+    assert viewer._host.framebuffer_size()[1] > 1
+    # Tk may deliver both Map and Expose while making the widget visible.
+    assert viewer.renderer_diagnostics["frame_count"] >= 1
+
+    viewer.destroy()
+    root.destroy()
+
+
 def test_auto_backend_retains_software_fallback_diagnostic(monkeypatch):
     from any3dview import create_viewer
 

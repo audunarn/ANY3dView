@@ -18,6 +18,26 @@ pip install "ANY3dView[gpu]"       # ModernGL + tkinter-gl
 pip install "ANY3dView[geometry]"  # ANYgeometry adapter (Python 3.11+)
 ```
 
+## Interactive demo
+
+Run the retained-array showcase from an installed package:
+
+```bash
+pip install "ANY3dView[gpu]"  # or install ANYtk3D for the software backend
+any3dview-demo --backend auto
+```
+
+Or run it directly from a source checkout; the launcher also discovers a
+sibling `ANYtk3D` checkout for software fallback:
+
+```powershell
+python C:\Github\ANY3dView\run_gui.py --backend auto
+```
+
+Use `--backend gpu` to require ModernGL or `--backend software` to require
+ANYtk3D. The demo includes scalar colouring, deformation animation, section
+clipping and backend/fallback diagnostics.
+
 ## Core API
 
 ```python

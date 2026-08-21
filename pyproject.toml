@@ -41,6 +41,9 @@ Homepage = "https://github.com/audunarn/ANY3dView"
 Repository = "https://github.com/audunarn/ANY3dView"
 Issues = "https://github.com/audunarn/ANY3dView/issues"
 
+[project.gui-scripts]
+any3dview-demo = "any3dview.demo:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

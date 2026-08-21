@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.9",
+    "numpy": "2.4.3",
+    "moderngl": "5.12.0",
+    "commit": "c394a7b726ca6754d7be137a249e3da09dff3f64",
+    "gl_vendor": "NVIDIA Corporation",
+    "gl_renderer": "NVIDIA GeForce RTX 3090 Ti/PCIe/SSE2",
+    "gl_version": "3.3.0 NVIDIA 591.86"
+  },
+  "scene": {
+    "name": "plate_grid_707x707",
+    "viewport": [
+      1920,
+      1080
+    ],
+    "nodes": 501264,
+    "triangles": 999698,
+    "elements": 499849,
+    "warmup_seconds": 2.0,
+    "sample_seconds": 10.0,
+    "vsync": false
+  },
+  "timings_ms": {
+    "scalar_upload": 7.686500030104071,
+    "displacement_upload": 31.246400030795485,
+    "initial_pick": 11.470799974631518,
+    "cached_pick_median": 0.03095000283792615
+  },
+  "render_samples": {
+    "opaque": {
+      "frames": 25772,
+      "fps": 2577.2,
+      "cpu_median_ms": 0.13649999164044857,
+      "cpu_p95_ms": 0.1732449803967026,
+      "gpu_median_ms": 0.111616,
+      "gpu_p95_ms": 0.116736,
+      "draw_calls": 1
+    },
+    "structural_edges": {
+      "frames": 9612,
+      "fps": 961.2,
+      "cpu_median_ms": 0.1650999765843153,
+      "cpu_p95_ms": 0.20519999088719487,
+      "gpu_median_ms": 0.761856,
+      "gpu_p95_ms": 1.11104,
+      "draw_calls": 2
+    }
+  },
+  "throughput": {
+    "geometry_uploads": 4
+  },
+  "memory_bytes": {
+    "positions": 6015168,
+    "triangles": 11996376,
+    "fields": 16024012
+  },
+  "upload_scene": {
+    "nodes": 1002001,
+    "triangles": 2000000,
+    "elements": 1000000
+  },
+  "process": {
+    "pid": 52124
+  }
+}

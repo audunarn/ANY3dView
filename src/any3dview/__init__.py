@@ -35,7 +35,7 @@ from .factory import create_viewer
 from .shading import Light
 from .shapes import Mesh
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 __all__ = [
     "Camera3D",

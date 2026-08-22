@@ -41,12 +41,12 @@ qualification:
 
 ```powershell
 python -m twine upload `
-  C:\Github\ANY3dView\dist\any3dview-0.5.0-py3-none-any.whl `
-  C:\Github\ANY3dView\dist\any3dview-0.5.0.tar.gz
+  C:\Github\ANY3dView\dist\any3dview-0.5.1-py3-none-any.whl `
+  C:\Github\ANY3dView\dist\any3dview-0.5.1.tar.gz
 
 python -m twine upload `
-  C:\Github\ANYtk3D\dist\anytk3d-0.5.0-py3-none-any.whl `
-  C:\Github\ANYtk3D\dist\anytk3d-0.5.0.tar.gz
+  C:\Github\ANYtk3D\dist\anytk3d-0.5.1-py3-none-any.whl `
+  C:\Github\ANYtk3D\dist\anytk3d-0.5.1.tar.gz
 
 python -m twine upload `
   C:\Github\ANYfem\dist\anyfem-0.3.0-py3-none-any.whl `

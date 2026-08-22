@@ -4,6 +4,7 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+.pytest_tmp_*/
 .venv/
 venv/
 .idea/

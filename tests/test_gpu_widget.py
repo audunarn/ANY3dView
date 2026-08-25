@@ -88,6 +88,42 @@ def test_gpu_widget_demand_redraw_and_repeated_create_destroy():
     root.destroy()
 
 
+def test_windows_gpu_host_prefers_core_profile(monkeypatch):
+    import any3dview.gpu.host as host
+
+    monkeypatch.delenv("ANY3DVIEW_GL_PROFILE", raising=False)
+    monkeypatch.setattr(host.sys, "platform", "win32")
+    assert host._gl_profile() == "4_1"
+
+    monkeypatch.setenv("ANY3DVIEW_GL_PROFILE", "legacy")
+    assert host._gl_profile() == "legacy"
+
+
+def test_gpu_destroy_releases_context_before_surface(monkeypatch):
+    from any3dview.gpu import Any3DView
+
+    root = tk.Tk()
+    viewer = Any3DView(root, width=240, height=180)
+    viewer.pack(fill=tk.BOTH, expand=True)
+    root.update()
+
+    released = []
+    context = viewer._renderer.ctx
+    original_release = context.release
+
+    def release_context():
+        assert viewer._host.surface.winfo_exists()
+        released.append(True)
+        original_release()
+
+    monkeypatch.setattr(context, "release", release_context)
+    viewer.destroy()
+    assert released == [True]
+    assert viewer._renderer is None
+    assert viewer._hud is None
+    root.destroy()
+
+
 def test_gpu_first_frame_waits_until_surface_is_mapped():
     from any3dview.gpu import Any3DView
 

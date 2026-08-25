@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from typing import Callable, Protocol
 
 try:
@@ -21,16 +23,39 @@ class GLHostProtocol(Protocol):
     def close(self) -> None: ...
 
 
+def _gl_profile() -> str:
+    """Return the TkGL profile selected for this process.
+
+    Windows drivers have proved substantially safer with TkGL's core profile
+    than with the highest-version legacy compatibility context.  In
+    particular, recent NVIDIA drivers can terminate the process inside
+    ``nvoglv64.dll`` while servicing the compatibility context, which cannot
+    be caught by Python.  Keep the legacy profile on other platforms and as
+    an explicit escape hatch for Windows hardware limited to OpenGL 3.3/4.0.
+    """
+
+    requested = os.environ.get("ANY3DVIEW_GL_PROFILE", "").strip().casefold()
+    aliases = {
+        "": "4_1" if sys.platform == "win32" else "legacy",
+        "core": "4_1",
+        "4.1": "4_1",
+        "4_1": "4_1",
+        "legacy": "legacy",
+    }
+    try:
+        return aliases[requested]
+    except KeyError as error:
+        raise ValueError(
+            "ANY3DVIEW_GL_PROFILE must be 'core', '4.1', or 'legacy'"
+        ) from error
+
+
 class _Surface(GLCanvas):
-    # tkinter-gl 1.1 has no 3.3 profile token and its 3.2 token deliberately
-    # caps the context below our renderer minimum.  On Windows the legacy
-    # request exposes the driver's highest compatibility context, after which
-    # ModernGL is the authoritative OpenGL >= 3.3 gate.  This keeps 3.3--4.0
-    # hardware usable while old compatibility contexts fail diagnostically.
-    profile = "legacy"
+    profile = ""
 
     def __init__(self, parent, draw_callback: Callable[[], None], **options):
         self._draw_callback = draw_callback
+        self.profile = _gl_profile()
         super().__init__(parent, **options)
 
     def draw(self) -> None:
@@ -46,6 +71,7 @@ class TkinterGLHost:
         self._retry_id = None
         self._draw_idle_id = None
         self.surface = _Surface(parent, self._draw_surface, **options)
+        self.profile = self.surface.profile
 
     def _draw_surface(self) -> None:
         """Draw only after Tk has mapped a non-trivial framebuffer."""

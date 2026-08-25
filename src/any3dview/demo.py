@@ -140,6 +140,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         "viewer": None,
         "handle": None,
         "requested": arguments.backend,
+        "closing": False,
     }
 
     backend_labels = {
@@ -307,6 +308,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     start_time = time.perf_counter()
 
     def animation_tick() -> None:
+        if bool(state["closing"]):
+            return
         if animate.get():
             scale = 1.1 + 0.9 * math.sin(2.0 * (time.perf_counter() - start_time))
             deformation.set(scale)
@@ -315,8 +318,21 @@ def main(argv: Sequence[str] | None = None) -> None:
                 handle.set_deformation_scale(scale)
         root.after(16, animation_tick)
 
+    def close_demo() -> None:
+        """Release a native GPU context before destroying its Tk window."""
+
+        if bool(state["closing"]):
+            return
+        state["closing"] = True
+        viewer = current_viewer()
+        state.update(viewer=None, handle=None)
+        if viewer is not None:
+            viewer.destroy()
+        root.destroy()
+
     root.after(16, animation_tick)
-    root.bind("<Escape>", lambda _event: root.destroy())
+    root.protocol("WM_DELETE_WINDOW", close_demo)
+    root.bind("<Escape>", lambda _event: close_demo())
     root.mainloop()
 
 

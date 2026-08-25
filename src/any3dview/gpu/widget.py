@@ -3312,10 +3312,19 @@ class Any3DView(ttk.Frame):
                 if hud is not None:
                     hud.release()
                 renderer.release()
-            except (RuntimeError, tk.TclError):
+                # The ModernGL wrapper must be released while TkGL's native
+                # WGL context is still current.  Deferring this to Python
+                # finalization after the Tk surface has gone away can enter
+                # the display driver with a stale context and terminate the
+                # process instead of raising a Python exception.
+                renderer.ctx.release()
+            except (RuntimeError, tk.TclError, moderngl.Error):
                 # Parent-driven Tcl/GL teardown may have already invalidated
                 # the drawable. Python ownership is still closed below.
                 pass
+            finally:
+                self._hud = None
+                self._renderer = None
         host = getattr(self, "_host", None)
         if host is not None:
             try:

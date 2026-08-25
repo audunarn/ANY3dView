@@ -127,11 +127,12 @@ animation and image capture), so existing scenes can be populated without a
 renderer-specific branch. Backend-specific pixels and Tk Canvas item IDs are
 not part of that portable contract.
 
-`tkinter-gl` 1.1 has no OpenGL 3.3 profile token: its `3_2` request caps the
-context below the renderer requirement on Windows. The host therefore requests
-the driver's legacy/compatibility context and ModernGL enforces the actual
-OpenGL 3.3 minimum. This is the tkinter-gl route that keeps 3.3--4.0 hardware
-eligible; older contexts fail with an actionable GPU initialization diagnostic.
+`tkinter-gl` 1.1 has no OpenGL 3.3 profile token. On Windows, ANY3dView prefers
+its OpenGL 4.1 core profile because recent NVIDIA drivers can terminate a
+process inside the driver when TkGL and ModernGL share a legacy compatibility
+context. Set `ANY3DVIEW_GL_PROFILE=legacy` before creating the viewer only when
+using Windows hardware limited to OpenGL 3.3/4.0. ModernGL remains the final
+version gate, and unsupported contexts fail with an actionable diagnostic.
 
 `ViewerBackend`, `ViewerCapabilities`, `Pick` and `ViewerState` describe the
 shared integration boundary. Applications can switch renderers

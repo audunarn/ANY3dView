@@ -186,7 +186,7 @@ layer = GeometryLayer(model, DisplayPolicy(mode="combined"))
 viewer.add_layer(layer)
 ```
 
-The optional adapter consumes ANYgeometry 0.2.2/schema 4 public records and
+The optional adapter is qualified against ANYgeometry 0.4.0/schema 4 public records and
 change sets. Stable chunks, entity-generation tessellation caches, bounded
 cross-thread polling, revision-gap resynchronization and replacement-lineage
 selection keep geometry ownership separate from display data. Geometry,

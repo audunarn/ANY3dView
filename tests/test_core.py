@@ -9,7 +9,7 @@ from any3dview.shading import face_shade
 
 
 def test_public_version_and_modules_are_available():
-    assert any3dview.__version__ == "0.5.2"
+    assert any3dview.__version__ == "0.5.3"
     for name in any3dview.__all__:
         assert hasattr(any3dview, name), name
 

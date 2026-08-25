@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ANY3dView"
-version = "0.5.2"
+version = "0.5.3"
 description = "Backend-neutral geometry, camera, shading, clipping and selection core for scientific 3D viewers"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -34,7 +34,7 @@ dependencies = ["numpy"]
 [project.optional-dependencies]
 dev = ["pytest", "build", "twine"]
 gpu = ["moderngl>=5.12,<6", "tkinter-gl>=1.1,<2", "Pillow>=10,<13"]
-geometry = ["ANYgeometry>=0.2.2,<0.3", "mapbox-earcut>=1.0,<2"]
+geometry = ["ANYgeometry>=0.4.0,<0.5", "mapbox-earcut>=1.0,<2"]
 
 [project.urls]
 Homepage = "https://github.com/audunarn/ANY3dView"

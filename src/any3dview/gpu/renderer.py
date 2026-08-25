@@ -150,6 +150,7 @@ void main() {
     uint semantic = texelFetch(
         u_semantic_elements, address(element, u_element_width), 0
     ).r;
+    if ((semantic & 4u) != 0u) discard;
     if ((semantic & 2u) != 0u)
         shaded = mix(shaded, u_preselection_color, 0.78);
     else if ((semantic & 1u) != 0u)
@@ -176,6 +177,7 @@ uniform uint u_element_width;
 uniform uint u_triangle_width;
 uniform usampler2D u_triangle_to_element;
 uniform usampler2D u_active_elements;
+uniform usampler2D u_semantic_elements;
 in vec3 v_relative;
 layout(location = 0) out uint pick_id;
 ivec2 address(uint index, uint width) {
@@ -186,6 +188,7 @@ void main() {
         u_triangle_to_element, address(uint(gl_PrimitiveID), u_triangle_width), 0
     ).r;
     if (texelFetch(u_active_elements, address(element, u_element_width), 0).r == 0u) discard;
+    if ((texelFetch(u_semantic_elements, address(element, u_element_width), 0).r & 4u) != 0u) discard;
     if (u_section_enabled && dot(u_section_normal, v_relative) < u_section_relative_offset) discard;
     int stipple_start = gl_FrontFacing ? u_stipple_start : u_stipple_back_start;
     int stipple_count = gl_FrontFacing ? u_stipple_count : u_stipple_back_count;
@@ -286,6 +289,7 @@ void main() {
     uint semantic = texelFetch(
         u_semantic_lines, address(v_primitive, u_line_width), 0
     ).r;
+    if ((semantic & 4u) != 0u) discard;
     if ((semantic & 2u) != 0u)
         color = mix(color, u_preselection_color, 0.85);
     else if ((semantic & 1u) != 0u)
@@ -301,10 +305,19 @@ uniform vec3 u_section_normal;
 uniform float u_section_relative_offset;
 uniform uint u_pick_base;
 uniform bool u_pick_enabled;
+uniform usampler2D u_semantic_lines;
+uniform uint u_line_width;
 in vec3 v_relative;
 flat in uint v_primitive;
 layout(location = 0) out uint pick_id;
+ivec2 address(uint index, uint width) {
+    return ivec2(int(index % width), int(index / width));
+}
 void main() {
+    uint semantic = texelFetch(
+        u_semantic_lines, address(v_primitive, u_line_width), 0
+    ).r;
+    if ((semantic & 4u) != 0u) discard;
     if (u_section_enabled && dot(u_section_normal, v_relative) < u_section_relative_offset) discard;
     pick_id = u_pick_enabled ? u_pick_base + v_primitive + 1u : 0u;
 }
@@ -358,6 +371,7 @@ void main() {
     uint semantic = texelFetch(
         u_semantic_points, address(uint(gl_PrimitiveID), u_point_width), 0
     ).r;
+    if ((semantic & 4u) != 0u) discard;
     if ((semantic & 2u) != 0u)
         color = mix(color, u_preselection_color, 0.90);
     else if ((semantic & 1u) != 0u)
@@ -373,12 +387,20 @@ uniform vec3 u_section_normal;
 uniform float u_section_relative_offset;
 uniform uint u_pick_base;
 uniform bool u_pick_enabled;
+uniform usampler2D u_semantic_points;
+uniform uint u_point_width;
 in vec3 v_relative;
 layout(location = 0) out uint pick_id;
+ivec2 address(uint index, uint width) {
+    return ivec2(int(index % width), int(index / width));
+}
 void main() {
     vec2 delta = gl_PointCoord * 2.0 - 1.0;
     if (dot(delta, delta) > 1.0) discard;
     if (u_section_enabled && dot(u_section_normal, v_relative) < u_section_relative_offset) discard;
+    if ((texelFetch(
+        u_semantic_points, address(uint(gl_PrimitiveID), u_point_width), 0
+    ).r & 4u) != 0u) discard;
     pick_id = u_pick_enabled ? u_pick_base + uint(gl_PrimitiveID) + 1u : 0u;
 }
 """
@@ -473,11 +495,13 @@ def _semantic_mask_payload(
     width: int,
     highlighted: np.ndarray,
     preselected: np.ndarray,
+    hidden: np.ndarray,
 ) -> bytes:
     """Pack highlight/preselection into one byte per GPU primitive.
 
-    Bit zero is persistent semantic highlight and bit one is transient
-    preselection.  The dense byte texture lets a changed semantic set be one
+    Bit zero is persistent semantic highlight, bit one is transient
+    preselection, and bit two discards hidden primitives.  The dense byte
+    texture lets a changed semantic set be one
     bounded buffer upload, independent of camera movement.
     """
 
@@ -485,8 +509,10 @@ def _semantic_mask_payload(
     if len(values):
         highlighted_valid = highlighted[highlighted < len(values)]
         preselected_valid = preselected[preselected < len(values)]
+        hidden_valid = hidden[hidden < len(values)]
         values[highlighted_valid.astype(np.intp, copy=False)] |= np.uint8(1)
         values[preselected_valid.astype(np.intp, copy=False)] |= np.uint8(2)
+        values[hidden_valid.astype(np.intp, copy=False)] |= np.uint8(4)
     padded = np.zeros(
         max(1, int(width) * math.ceil(len(values) / max(1, int(width)))),
         dtype=np.uint8,
@@ -859,10 +885,13 @@ class _Group:
     scalar_range: Optional[tuple[float, float]]
     highlighted_elements: np.ndarray
     preselected_elements: np.ndarray
+    hidden_elements: np.ndarray
     highlighted_lines: np.ndarray
     preselected_lines: np.ndarray
+    hidden_lines: np.ndarray
     highlighted_points: np.ndarray
     preselected_points: np.ndarray
+    hidden_points: np.ndarray
     chunk_pickable: set[object]
     chunk_semantic_masks: dict[object, dict[str, np.ndarray]]
     generations: DirtyGenerations
@@ -998,6 +1027,9 @@ class ModernGLRenderer:
             np.empty(0, dtype=np.uint32),
             np.empty(0, dtype=np.uint32),
             np.empty(0, dtype=np.uint32),
+            np.empty(0, dtype=np.uint32),
+            np.empty(0, dtype=np.uint32),
+            np.empty(0, dtype=np.uint32),
             set(),
             {},
             handle.generations,
@@ -1081,10 +1113,13 @@ class ModernGLRenderer:
         *,
         selected_elements: Sequence[int] = (),
         preselected_elements: Sequence[int] = (),
+        hidden_elements: Sequence[int] = (),
         selected_lines: Sequence[int] = (),
         preselected_lines: Sequence[int] = (),
+        hidden_lines: Sequence[int] = (),
         selected_points: Sequence[int] = (),
         preselected_points: Sequence[int] = (),
+        hidden_points: Sequence[int] = (),
     ) -> None:
         """Replace semantic masks belonging to one retained chunk.
 
@@ -1110,10 +1145,13 @@ class ModernGLRenderer:
         specifications = (
             ("highlighted_elements", selected_elements, "element"),
             ("preselected_elements", preselected_elements, "element"),
+            ("hidden_elements", hidden_elements, "element"),
             ("highlighted_lines", selected_lines, "line"),
             ("preselected_lines", preselected_lines, "line"),
+            ("hidden_lines", hidden_lines, "line"),
             ("highlighted_points", selected_points, "point"),
             ("preselected_points", preselected_points, "point"),
+            ("hidden_points", hidden_points, "point"),
         )
         changed: set[str] = set()
         for attribute, supplied, kind in specifications:
@@ -1124,6 +1162,8 @@ class ModernGLRenderer:
             changed.add(kind)
         for kind in changed:
             self._write_chunk_semantic_mask(group, chunk_id, kind)
+        if changed:
+            self.pick_dirty = True
 
     def set_chunk_pickable(
         self, handle: MeshHandle, chunk_id: object, pickable: bool = True
@@ -1172,10 +1212,13 @@ class ModernGLRenderer:
             for name in (
                 "highlighted_elements",
                 "preselected_elements",
+                "hidden_elements",
                 "highlighted_lines",
                 "preselected_lines",
+                "hidden_lines",
                 "highlighted_points",
                 "preselected_points",
+                "hidden_points",
             )
         }
 
@@ -1185,10 +1228,13 @@ class ModernGLRenderer:
         *,
         selected_elements: Sequence[int] = (),
         preselected_elements: Sequence[int] = (),
+        hidden_elements: Sequence[int] = (),
         selected_lines: Sequence[int] = (),
         preselected_lines: Sequence[int] = (),
+        hidden_lines: Sequence[int] = (),
         selected_points: Sequence[int] = (),
         preselected_points: Sequence[int] = (),
+        hidden_points: Sequence[int] = (),
     ) -> None:
         """Replace every semantic GPU mask for *handle* in three writes.
 
@@ -1203,10 +1249,13 @@ class ModernGLRenderer:
             handle,
             highlighted_elements=selected_elements,
             preselected_elements=preselected_elements,
+            hidden_elements=hidden_elements,
             highlighted_lines=selected_lines,
             preselected_lines=preselected_lines,
+            hidden_lines=hidden_lines,
             highlighted_points=selected_points,
             preselected_points=preselected_points,
+            hidden_points=hidden_points,
         )
 
     def _set_semantic_masks_partial(
@@ -1215,10 +1264,13 @@ class ModernGLRenderer:
         *,
         highlighted_elements: Any = _MISSING,
         preselected_elements: Any = _MISSING,
+        hidden_elements: Any = _MISSING,
         highlighted_lines: Any = _MISSING,
         preselected_lines: Any = _MISSING,
+        hidden_lines: Any = _MISSING,
         highlighted_points: Any = _MISSING,
         preselected_points: Any = _MISSING,
+        hidden_points: Any = _MISSING,
     ) -> None:
         """Update supplied semantic GPU masks with at most one write per kind.
 
@@ -1234,10 +1286,13 @@ class ModernGLRenderer:
         specifications = (
             ("highlighted_elements", highlighted_elements, "element"),
             ("preselected_elements", preselected_elements, "element"),
+            ("hidden_elements", hidden_elements, "element"),
             ("highlighted_lines", highlighted_lines, "line"),
             ("preselected_lines", preselected_lines, "line"),
+            ("hidden_lines", hidden_lines, "line"),
             ("highlighted_points", highlighted_points, "point"),
             ("preselected_points", preselected_points, "point"),
+            ("hidden_points", hidden_points, "point"),
         )
         changed: set[str] = set()
         for attribute, supplied, kind in specifications:
@@ -1250,17 +1305,22 @@ class ModernGLRenderer:
             changed.add(kind)
         for kind in changed:
             self._write_semantic_mask(group, kind)
+        if changed:
+            self.pick_dirty = True
 
     def _write_semantic_mask(self, group: _Group, kind: str) -> None:
         if kind == "element":
             highlighted = group.highlighted_elements
             preselected = group.preselected_elements
+            hidden = group.hidden_elements
         elif kind == "line":
             highlighted = group.highlighted_lines
             preselected = group.preselected_lines
+            hidden = group.hidden_lines
         elif kind == "point":
             highlighted = group.highlighted_points
             preselected = group.preselected_points
+            hidden = group.hidden_points
         else:  # pragma: no cover - internal invariant
             raise ValueError(f"unknown semantic primitive kind: {kind}")
 
@@ -1269,7 +1329,7 @@ class ModernGLRenderer:
             None,
         )
         if chunk is not None:
-            self._write_chunk_mask_texture(chunk, kind, highlighted, preselected)
+            self._write_chunk_mask_texture(chunk, kind, highlighted, preselected, hidden)
 
     def _write_chunk_semantic_mask(
         self, group: _Group, chunk_id: object, kind: str
@@ -1288,8 +1348,9 @@ class ModernGLRenderer:
         preselected = (
             empty if state is None else state[f"preselected_{kind}s"]
         )
+        hidden = empty if state is None else state[f"hidden_{kind}s"]
         self._write_chunk_mask_texture(
-            chunk, kind, highlighted, preselected
+            chunk, kind, highlighted, preselected, hidden
         )
 
     def _write_chunk_mask_texture(
@@ -1298,6 +1359,7 @@ class ModernGLRenderer:
         kind: str,
         highlighted: np.ndarray,
         preselected: np.ndarray,
+        hidden: np.ndarray,
     ) -> None:
         if kind == "element":
             count = chunk.mesh.element_count
@@ -1316,7 +1378,7 @@ class ModernGLRenderer:
         else:  # pragma: no cover - internal invariant
             raise ValueError(f"unknown semantic primitive kind: {kind}")
         texture.write(
-            _semantic_mask_payload(count, width, highlighted, preselected)
+            _semantic_mask_payload(count, width, highlighted, preselected, hidden)
         )
         self.semantic_buffer_updates += 1
 
@@ -1327,10 +1389,13 @@ class ModernGLRenderer:
             semantic_masks = {
                 "selected_elements": group.highlighted_elements.copy(),
                 "preselected_elements": group.preselected_elements.copy(),
+                "hidden_elements": group.hidden_elements.copy(),
                 "selected_lines": group.highlighted_lines.copy(),
                 "preselected_lines": group.preselected_lines.copy(),
+                "hidden_lines": group.hidden_lines.copy(),
                 "selected_points": group.highlighted_points.copy(),
                 "preselected_points": group.preselected_points.copy(),
+                "hidden_points": group.hidden_points.copy(),
             }
             chunk_semantic_masks = {
                 chunk_id: {
@@ -1377,10 +1442,13 @@ class ModernGLRenderer:
                     chunk_id,
                     selected_elements=state["highlighted_elements"],
                     preselected_elements=state["preselected_elements"],
+                    hidden_elements=state["hidden_elements"],
                     selected_lines=state["highlighted_lines"],
                     preselected_lines=state["preselected_lines"],
+                    hidden_lines=state["hidden_lines"],
                     selected_points=state["highlighted_points"],
                     preselected_points=state["preselected_points"],
+                    hidden_points=state["hidden_points"],
                 )
             return
         sources = {chunk_id: mesh for chunk_id, mesh in [(None, group.handle.mesh), *group.handle.chunks]}
@@ -1906,6 +1974,9 @@ class ModernGLRenderer:
                     self._uniforms(
                         self.line_pick_program, chunk, camera, viewport, section_plane
                     )
+                    chunk.bind_line_semantics(
+                        self.line_pick_program, self._set_uniform_value
+                    )
                     self._set_uniform_value(
                         self.line_pick_program,
                         "u_half_width",
@@ -1942,6 +2013,9 @@ class ModernGLRenderer:
                         self.ctx.disable(moderngl.DEPTH_TEST)
                     self._uniforms(
                         self.point_pick_program, chunk, camera, viewport, section_plane
+                    )
+                    chunk.bind_point_semantics(
+                        self.point_pick_program, self._set_uniform_value
                     )
                     self._set_uniform_value(
                         self.point_pick_program,

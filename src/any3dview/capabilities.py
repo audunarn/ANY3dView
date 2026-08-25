@@ -30,6 +30,10 @@ class ViewerCapabilities:
     image_capture: bool = False
     line_occlusion: bool = False
     stippled_transparency: bool = False
+    semantic_selection: bool = False
+    semantic_visibility: bool = False
+    viewer_commands: bool = False
+    command_history: bool = False
 
 
 CORE_CAPABILITIES = ViewerCapabilities(
@@ -38,4 +42,8 @@ CORE_CAPABILITIES = ViewerCapabilities(
     incremental_chunks=True,
     through_selection=True,
     clipping_planes=True,
+    semantic_selection=True,
+    semantic_visibility=True,
+    viewer_commands=True,
+    command_history=True,
 )

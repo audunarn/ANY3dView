@@ -82,12 +82,13 @@ def test_semantic_masks_are_compact_distinct_and_do_not_replace_app_selection(
         preselected_elements=(0,),
         selected_lines=(0,),
         preselected_points=(0,),
+        hidden_points=(0,),
     )
 
     assert renderer.semantic_buffer_updates == before + 3
     assert np.frombuffer(chunk.semantic_elements.read(), np.uint8)[0] == 3
     assert np.frombuffer(chunk.semantic_lines.read(), np.uint8)[0] == 1
-    assert np.frombuffer(chunk.semantic_points.read(), np.uint8)[0] == 2
+    assert np.frombuffer(chunk.semantic_points.read(), np.uint8)[0] == 6
     assert np.frombuffer(chunk.selected.read(), np.uint32)[0] == 1
     assert handle.selected_elements.tolist() == [0]
 
@@ -100,6 +101,7 @@ def test_semantic_masks_are_compact_distinct_and_do_not_replace_app_selection(
         preselected_elements=(0,),
         selected_lines=(0,),
         preselected_points=(0,),
+        hidden_points=(0,),
     )
     assert renderer.semantic_buffer_updates == before + 3
     renderer.set_preselected_lines(handle, (0,))

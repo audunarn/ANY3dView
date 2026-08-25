@@ -34,6 +34,7 @@ from ..core import (
 from ..errors import GPUUnavailableError
 from ..ownership import ModelOwner, PackedOwnerTable
 from ..retained import MeshHandle
+from ..semantic import SemanticRef, VisibilityState, semantic_refs
 from ..scheduler import ViewerScheduler
 from ..shading import Light
 from .. import shapes as shapes_module
@@ -85,6 +86,10 @@ GPU_CAPABILITIES = ViewerCapabilities(
     image_capture=True,
     line_occlusion=True,
     stippled_transparency=True,
+    semantic_selection=True,
+    semantic_visibility=True,
+    viewer_commands=True,
+    command_history=True,
 )
 
 
@@ -136,6 +141,8 @@ class Any3DView(ttk.Frame):
         self._preselected_key: Optional[str] = None
         self._preselection_from_hit = False
         self._selection_config = SelectionConfig()
+        self._semantic_selection: tuple[SemanticRef, ...] = ()
+        self._visibility_state = VisibilityState()
         self._selection_index: Optional[ProjectedSelectionIndex] = None
         self._selection_index_key: object = None
         self._mouse = (0, 0)
@@ -249,6 +256,8 @@ class Any3DView(ttk.Frame):
             axis_indicator=self._show_axis_indicator,
             axis_ruler=self.show_axis_ruler,
             interaction_profile=self._interaction_profile,
+            semantic_selection=self._semantic_selection,
+            visibility=self._visibility_state,
         )
 
     def apply_view_state(self, state: ViewerState, *, redraw: bool = True) -> None:
@@ -278,6 +287,8 @@ class Any3DView(ttk.Frame):
         self._show_axis_indicator = bool(state.axis_indicator)
         self.show_axis_ruler = bool(state.axis_ruler)
         self.set_interaction_profile(profile)
+        self._semantic_selection = semantic_refs(state.semantic_selection)
+        self._visibility_state = state.visibility
         self._renderer.pick_dirty = True
         self._selection_index = None
         if redraw:
@@ -337,6 +348,35 @@ class Any3DView(ttk.Frame):
     @property
     def selection_config(self) -> SelectionConfig:
         return self._selection_config
+
+    @property
+    def semantic_selection(self) -> tuple[SemanticRef, ...]:
+        return self._semantic_selection
+
+    @property
+    def visibility_state(self) -> VisibilityState:
+        return self._visibility_state
+
+    def set_semantic_selection(self, values: Sequence[SemanticRef]) -> None:
+        self._semantic_selection = semantic_refs(values)
+        self._renderer.pick_dirty = True
+        self._selection_index = None
+        self._apply_highlight_masks()
+
+    def set_visibility_state(self, state: VisibilityState) -> None:
+        if not isinstance(state, VisibilityState):
+            raise TypeError("state must be VisibilityState")
+        self._visibility_state = state
+        self._renderer.pick_dirty = True
+        self._selection_index = None
+        self._selection_index_key = None
+        self._apply_highlight_masks()
+
+    def _semantic_binding_visible(self, binding: Optional[PickBinding]) -> bool:
+        state = getattr(self, "_visibility_state", VisibilityState())
+        if state.is_default:
+            return True
+        return state.accepts(() if binding is None else binding.owners)
 
     def set_light(
         self,
@@ -818,6 +858,10 @@ class Any3DView(ttk.Frame):
 
     def _apply_highlight_masks(self) -> None:
         selected_keys = set(self._highlighted_tags)
+        selected_keys.update(
+            self._semantic_key(value)
+            for value in getattr(self, "_semantic_selection", ())
+        )
         preselected_key = (
             self._preselected_key
             if self._preselected_key not in selected_keys
@@ -864,7 +908,7 @@ class Any3DView(ttk.Frame):
                         handle, chunk_id, chunk_resolvable
                     )
                 if (
-                    chunk_resolvable
+                    (chunk_resolvable or not self._visibility_state.is_default)
                     and hasattr(self._renderer, "set_chunk_semantic_masks")
                 ):
                     self._renderer.set_chunk_semantic_masks(
@@ -892,6 +936,9 @@ class Any3DView(ttk.Frame):
             "elements": [], "lines": [], "points": [],
         }
         preselected: dict[str, list[np.ndarray]] = {
+            "elements": [], "lines": [], "points": [],
+        }
+        hidden: dict[str, list[np.ndarray]] = {
             "elements": [], "lines": [], "points": [],
         }
         if isinstance(table, PackedOwnerTable):
@@ -927,6 +974,11 @@ class Any3DView(ttk.Frame):
                         semantic[preselected_key] = values
                     if len(values):
                         preselected[suffix].append(values)
+                hidden_values = self._hidden_primitives_for_visibility(
+                    mesh, table, resolver, primitive_kind
+                )
+                if len(hidden_values):
+                    hidden[suffix].append(hidden_values)
 
         counts = {
             "elements": mesh.element_count,
@@ -942,6 +994,22 @@ class Any3DView(ttk.Frame):
                 if count:
                     preselected[suffix].append(np.arange(count, dtype=np.uint32))
 
+        visibility = getattr(self, "_visibility_state", VisibilityState())
+        if not isinstance(table, PackedOwnerTable) and not visibility.is_default:
+            hidden_tag_keys = {
+                self._semantic_key(value) for value in visibility.hidden
+            }
+            isolated_tag_keys = {
+                self._semantic_key(value) for value in visibility.isolated
+            }
+            hide_entry = bool(entry_tags & hidden_tag_keys)
+            if visibility.isolated or visibility.isolated_kinds:
+                hide_entry = hide_entry or not bool(entry_tags & isolated_tag_keys)
+            if hide_entry:
+                for suffix, count in counts.items():
+                    if count:
+                        hidden[suffix].append(np.arange(count, dtype=np.uint32))
+
         def combined(parts: list[np.ndarray]) -> np.ndarray:
             return (
                 np.unique(np.concatenate(parts)).astype(np.uint32, copy=False)
@@ -956,7 +1024,73 @@ class Any3DView(ttk.Frame):
             f"preselected_{suffix}": combined(preselected[suffix])
             for suffix in ("elements", "lines", "points")
         })
+        masks.update({
+            f"hidden_{suffix}": combined(hidden[suffix])
+            for suffix in ("elements", "lines", "points")
+        })
         return masks
+
+    @staticmethod
+    def _semantic_key(value: SemanticRef) -> str:
+        return (
+            f"{value.model_id}:{value.kind}:{value.key}"
+            if value.source == "model"
+            else str(value.key)
+        )
+
+    def _hidden_primitives_for_visibility(
+        self,
+        mesh: MeshArrays,
+        table: PackedOwnerTable,
+        resolver: Optional[Callable[..., object]],
+        primitive_kind: str,
+    ) -> np.ndarray:
+        state = getattr(self, "_visibility_state", VisibilityState())
+        if state.is_default:
+            return np.empty(0, dtype=np.uint32)
+        explicitly_hidden = np.zeros(table.owner_count, dtype=np.uint8)
+        isolated = np.zeros(table.owner_count, dtype=np.uint8)
+        for row in range(table.owner_count):
+            try:
+                ref = SemanticRef.from_owner(table.owner(row, resolver))
+            except (TypeError, ValueError):
+                continue
+            explicitly_hidden[row] = (
+                ref in state.hidden or ref.kind in state.hidden_kinds
+            )
+            isolated[row] = (
+                ref in state.isolated or ref.kind in state.isolated_kinds
+            )
+        indices = getattr(table, f"{primitive_kind}_indices")
+        offsets = getattr(table, f"{primitive_kind}_offsets")
+        primitive_count = max(0, len(offsets) - 1)
+        if primitive_count == 0:
+            return np.empty(0, dtype=np.uint32)
+        counts = np.diff(offsets.astype(np.int64, copy=False))
+        primitives = np.repeat(np.arange(primitive_count, dtype=np.int64), counts)
+        explicit_counts = (
+            np.bincount(
+                primitives,
+                weights=explicitly_hidden[indices],
+                minlength=primitive_count,
+            )
+            if len(indices) else np.zeros(primitive_count)
+        )
+        hidden_values = explicit_counts > 0
+        if state.isolated or state.isolated_kinds:
+            isolated_counts = (
+                np.bincount(
+                    primitives,
+                    weights=isolated[indices],
+                    minlength=primitive_count,
+                )
+                if len(indices) else np.zeros(primitive_count)
+            )
+            hidden_values |= isolated_counts == 0
+        values = np.flatnonzero(hidden_values).astype(np.uint32, copy=False)
+        if primitive_kind == "triangle" and mesh.triangle_to_element is not None:
+            values = mesh.triangle_to_element[values]
+        return np.unique(values).astype(np.uint32, copy=False)
 
     @staticmethod
     def _semantic_primitives_for_key(
@@ -1200,6 +1334,7 @@ class Any3DView(ttk.Frame):
             getattr(self, "show_mesh_lines", True),
             getattr(self, "_occlude_lines", True),
             None if self._section_plane is None else self._section_plane.key,
+            getattr(self, "_visibility_state", VisibilityState()),
             tuple(
                 (
                     identifier,
@@ -1297,6 +1432,8 @@ class Any3DView(ttk.Frame):
                         if entry.get("appearance", {}).get("pickable", True)
                         else None
                     )
+                    if not self._semantic_binding_visible(binding):
+                        continue
                     projected.append(
                         ProjectedPrimitive(
                             primitive_id,
@@ -1362,6 +1499,8 @@ class Any3DView(ttk.Frame):
                             and not entry.get("appearance", {}).get("mesh_lines", False)
                             else None
                         )
+                        if not self._semantic_binding_visible(binding):
+                            continue
                         line_depths = tuple(
                             float(value) for value in camera_segment[:, 2]
                         )
@@ -1402,6 +1541,8 @@ class Any3DView(ttk.Frame):
                             if entry.get("appearance", {}).get("pickable", True)
                             else None
                         )
+                        if not self._semantic_binding_visible(binding):
+                            continue
                         projected.append(
                             ProjectedPrimitive(
                                 primitive_id,

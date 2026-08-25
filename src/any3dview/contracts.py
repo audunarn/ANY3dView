@@ -15,6 +15,7 @@ from .clipping import SectionPlane
 from .core import Camera3D, Point3D
 from .ownership import PackedOwnerTable
 from .retained import MeshHandle
+from .semantic import SemanticRef, VisibilityState
 from .selection import (
     SelectionConfig,
     SelectionDepth,
@@ -61,6 +62,8 @@ class ViewerState:
     axis_indicator: bool = True
     axis_ruler: bool = False
     interaction_profile: str = "legacy"
+    semantic_selection: tuple[SemanticRef, ...] = ()
+    visibility: VisibilityState = VisibilityState()
 
 
 Projection = Optional[tuple[float, float, float]]
@@ -105,6 +108,12 @@ class ViewerBackend(Protocol):
 
     @property
     def selection_config(self) -> SelectionConfig: ...
+
+    @property
+    def semantic_selection(self) -> tuple[SemanticRef, ...]: ...
+
+    @property
+    def visibility_state(self) -> VisibilityState: ...
 
     @property
     def preselected_key(self) -> Optional[str]: ...
@@ -203,6 +212,10 @@ class ViewerBackend(Protocol):
     def highlighted_tags(self) -> frozenset[str]: ...
 
     def set_preselection(self, key: Optional[str]) -> None: ...
+
+    def set_semantic_selection(self, values: Sequence[SemanticRef]) -> None: ...
+
+    def set_visibility_state(self, state: VisibilityState) -> None: ...
 
     def set_light(
         self,

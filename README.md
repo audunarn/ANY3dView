@@ -149,6 +149,34 @@ Both bundled backends expose `backend_name`, `event_widget`, `viewport_size`,
 `project_point(s)`, `screen_ray()` and `unproject_to_plane()`. These replace
 direct access to Tk canvas dimensions or private projection methods.
 
+## LLM-safe viewer commands
+
+ANY3dView 0.5.2 exposes a vendor-neutral JSON Schema 2020-12 command manifest.
+It contains only JSON-safe camera, display, section, semantic selection,
+visibility, observation, and undo/redo operations; it accepts no callbacks,
+expressions, or executable objects.
+
+```python
+from any3dview import ViewerCommand, ViewerCommandController
+
+controller = ViewerCommandController(viewer, entity_exists=model.contains_ref)
+result = controller.execute(ViewerCommand(
+    "viewer.visibility.isolate",
+    {"entities": [{
+        "source": "model", "model_id": str(model.uuid),
+        "kind": "face", "key": 42,
+    }]},
+))
+assert result.status == "ok"
+```
+
+`viewer_command_manifest()` is suitable for native tool calling or a strictly
+validated JSON fallback and has no dependency on an LLM vendor. Hosts assign
+trusted queue priorities, may pause AI work during pointer gestures, and get a
+bounded 50-step transactional history. `set_model_identity()` clears history
+when an application model changes; `revalidate()` removes stale same-model
+semantic references after a revision.
+
 ## ANYgeometry adapter
 
 ```python

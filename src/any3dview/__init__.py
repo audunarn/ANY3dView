@@ -4,6 +4,16 @@ from . import arrays, benchmarks, capabilities, clipping, contracts, core, owner
 from .arrays import MeshArrays
 from .capabilities import CORE_CAPABILITIES, ViewerCapabilities
 from .contracts import Pick, ViewerBackend, ViewerState
+from .commands import (
+    VIEWER_COMMANDS,
+    ViewerCommand,
+    ViewerCommandController,
+    ViewerCommandDescriptor,
+    ViewerCommandPriority,
+    ViewerCommandResult,
+    ViewerObservation,
+    viewer_command_manifest,
+)
 from .clipping import SectionPlane
 from .core import (
     Camera3D,
@@ -29,13 +39,14 @@ from .selection import (
 )
 from .ownership import ApplicationOwner, ModelOwner, PackedOwnerTable
 from .retained import DirtyGenerations, MeshHandle, RetainedViewer
+from .semantic import SemanticRef, VisibilityState
 from .scheduler import ViewerScheduler
 from .errors import GPUUnavailableError
 from .factory import create_viewer
 from .shading import Light
 from .shapes import Mesh
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 __all__ = [
     "Camera3D",
@@ -49,6 +60,16 @@ __all__ = [
     "ViewerBackend",
     "ViewerState",
     "ViewerScheduler",
+    "ViewerCommand",
+    "ViewerCommandController",
+    "ViewerCommandDescriptor",
+    "ViewerCommandPriority",
+    "ViewerCommandResult",
+    "ViewerObservation",
+    "VIEWER_COMMANDS",
+    "viewer_command_manifest",
+    "SemanticRef",
+    "VisibilityState",
     "CORE_CAPABILITIES",
     "ApplicationOwner",
     "ModelOwner",

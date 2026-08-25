@@ -416,6 +416,64 @@ def test_gpu_persistent_highlight_resolves_complete_owner_not_partial_hit(monkey
     assert captured[-1]["selected_elements"] == (0, 1)
 
 
+def test_gpu_visibility_compiles_owner_masks_without_geometry_updates(monkeypatch):
+    pytest.importorskip("moderngl")
+    import numpy as np
+    from any3dview import (
+        MeshArrays,
+        MeshHandle,
+        PackedOwnerTable,
+        PickBinding,
+        SemanticRef,
+        VisibilityState,
+    )
+    from any3dview.gpu import Any3DView
+
+    mesh = MeshArrays(
+        np.asarray([[0, 0, 0], [1, 0, 0]], np.float32),
+        np.empty((0, 3), np.uint32),
+        lines=np.asarray([[0, 1]], np.uint32),
+        point_indices=np.asarray([0], np.uint32),
+    )
+    handle = MeshHandle(mesh)
+    captured = []
+
+    class Renderer:
+        pick_dirty = False
+
+        def set_semantic_masks(self, _handle, **masks):
+            captured.append({key: tuple(value) for key, value in masks.items()})
+
+    viewer = Any3DView.__new__(Any3DView)
+    viewer._renderer = Renderer()
+    viewer._animation_frame_active = False
+    viewer._entries = {
+        id(handle): {
+            "handle": handle,
+            "owners": PackedOwnerTable.from_owners(
+                lines=(PickBinding.one("edge:1", "edge"),),
+                points=(PickBinding.one("node:1", "node"),),
+            ),
+            "owner_resolver": None,
+            "tags": frozenset(),
+        }
+    }
+    viewer._highlighted_tags = frozenset()
+    viewer._semantic_selection = ()
+    viewer._preselected_key = None
+    viewer._visibility_state = VisibilityState(hidden=(
+        SemanticRef("application", "edge", "edge:1"),
+    ))
+    monkeypatch.setattr(viewer, "redraw", lambda: None)
+    generations = handle.generations
+
+    viewer._apply_highlight_masks()
+
+    assert captured[-1]["hidden_lines"] == (0,)
+    assert captured[-1]["hidden_points"] == ()
+    assert handle.generations == generations
+
+
 def test_gpu_clear_keep_canvas_cancels_redraw_and_resets_transient_selection(monkeypatch):
     pytest.importorskip("moderngl")
     from any3dview import SelectionOperation

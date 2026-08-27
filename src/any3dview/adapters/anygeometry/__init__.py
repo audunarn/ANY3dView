@@ -1,4 +1,4 @@
-"""Optional ANYgeometry 0.2/schema-4 display adapter."""
+"""Optional ANYgeometry 0.4/schema-4 display adapter."""
 
 from .layer import GeometryLayer
 from .policy import DisplayMode, DisplayPolicy, TessellationPolicy

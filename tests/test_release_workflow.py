@@ -43,6 +43,32 @@ MANUAL_UPLOAD_ACTION = (
 )
 
 
+def _neutral_test_git_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    exact_names = {
+        "GIT_ATTR_NOSYSTEM",
+        "GIT_ATTR_SOURCE",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_EXTERNAL_DIFF",
+        "GIT_GRAFT_FILE",
+        "GIT_NO_LAZY_FETCH",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_OPTIONAL_LOCKS",
+        "GIT_REPLACE_REF_BASE",
+    }
+    for name in tuple(environment):
+        if (
+            name in exact_names
+            or name.startswith("GIT_CONFIG_KEY_")
+            or name.startswith("GIT_CONFIG_VALUE_")
+        ):
+            environment.pop(name, None)
+    return environment
+
+
 def _git(repository: Path, *arguments: str) -> str:
     completed = subprocess.run(
         [
@@ -59,6 +85,7 @@ def _git(repository: Path, *arguments: str) -> str:
         check=True,
         capture_output=True,
         text=True,
+        env=_neutral_test_git_environment(),
     )
     return completed.stdout.strip()
 

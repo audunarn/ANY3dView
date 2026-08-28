@@ -44,9 +44,11 @@ def _git_environment() -> dict[str, str]:
         "GIT_DIFF_OPTS",
         "GIT_DIR",
         "GIT_EXTERNAL_DIFF",
+        "GIT_GRAFT_FILE",
         "GIT_INDEX_FILE",
         "GIT_OBJECT_DIRECTORY",
         "GIT_PAGER",
+        "GIT_REPLACE_REF_BASE",
         "GIT_SHALLOW_FILE",
         "GIT_WORK_TREE",
     }

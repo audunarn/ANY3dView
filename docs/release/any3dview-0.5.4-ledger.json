@@ -1,0 +1,28 @@
+{
+  "artifact_source": {
+    "commit": "b5a2aba3ba77bdbadc87255fd73ee4833612efd7",
+    "tree": "11f551c483e0b76f5b3b5d5fccb4d82656001dcb"
+  },
+  "artifacts": [
+    {
+      "bytes": 132895,
+      "filename": "any3dview-0.5.4-py3-none-any.whl",
+      "sha256": "15D221AD1420487D48B9B20AEEBA58ADAC30F47FB4A7C07CFBF1B3BC9F34A821"
+    },
+    {
+      "bytes": 158752,
+      "filename": "any3dview-0.5.4.tar.gz",
+      "sha256": "AC94C36076C0E164C1827B1FCB95EE546806D33DA504DD2CB7D99C52BD3C37C2"
+    }
+  ],
+  "distribution": "ANY3dView",
+  "publication_authorized": true,
+  "qualification": {
+    "accepted_terminal": "ACCEPTED_ANY3DVIEW_0_5_4_RELEASE",
+    "evidence_sha256": "23379335DED5E85C8BFF95A694E7DB1CFE36D48E89862A13200EDCC3971BDFE2",
+    "independent_review_sha256": "28746948C1D23916A3FDC2DC55333C168C35B893986FE6AC60EED93B3AAC74E5"
+  },
+  "schema": "anyecosystem.release-ledger-v1",
+  "tag": "v0.5.4",
+  "version": "0.5.4"
+}

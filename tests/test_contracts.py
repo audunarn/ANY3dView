@@ -328,6 +328,40 @@ def test_gpu_large_hud_selection_does_not_build_projected_index(monkeypatch):
     viewer._render_hud((800, 600))
 
 
+def test_gpu_camera_drag_does_not_build_projected_highlight_index(monkeypatch):
+    pytest.importorskip("moderngl")
+    from any3dview.gpu import Any3DView
+
+    class Hud:
+        def begin(self, _viewport):
+            pass
+
+        def render(self):
+            pass
+
+    viewer = Any3DView.__new__(Any3DView)
+    viewer._hud = Hud()
+    viewer._world_text = []
+    viewer._section_plane = None
+    viewer._show_axis_indicator = False
+    viewer.show_axis_ruler = False
+    viewer._thickness_legend = None
+    viewer._highlighted_tags = frozenset(("geometry.face:1",))
+    viewer._preselected_key = None
+    viewer._selection_dragging = False
+    viewer._selection_press = None
+    viewer._selection_current = None
+    viewer._drag = "orbit"
+    monkeypatch.setattr(viewer, "_display_primitive_count", lambda _limit: 100)
+    monkeypatch.setattr(
+        viewer,
+        "_projected_selection_index",
+        lambda: (_ for _ in ()).throw(AssertionError("camera-time CPU projection")),
+    )
+
+    viewer._render_hud((800, 600))
+
+
 def test_gpu_semantic_masks_keep_line_point_and_preselection_distinct(monkeypatch):
     pytest.importorskip("moderngl")
     import numpy as np

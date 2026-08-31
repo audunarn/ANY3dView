@@ -3155,6 +3155,13 @@ class Any3DView(ttk.Frame):
         # orbiting a million-triangle mesh never projects elements in Python.
         if (
             active
+            # Semantic selection already has retained GPU masks.  The legacy
+            # screen-space outline remains useful while stationary, but
+            # rebuilding its projected primitive index for every changed
+            # camera matrix makes small/medium CAD scenes slower on the GPU
+            # than the Tk fallback.  Defer that optional outline until the
+            # pan/orbit gesture ends.
+            and not getattr(self, "_drag", "")
             and self._display_primitive_count(_CPU_POINT_STACK_LIMIT)
             <= _CPU_POINT_STACK_LIMIT
         ):

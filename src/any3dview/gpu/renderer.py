@@ -898,6 +898,25 @@ class _Group:
     chunks: list[tuple[object, _Chunk]]
 
 
+@dataclass(slots=True)
+class _CameraFrame:
+    """Camera values shared by every program and chunk in one render pass."""
+
+    viewport: tuple[int, int]
+    position: np.ndarray
+    right: np.ndarray
+    up: np.ndarray
+    forward: np.ndarray
+    view: np.ndarray
+    projection: np.ndarray
+    near: float
+    far: float
+    frustum_tangent: float
+    section_enabled: bool
+    section_normal: tuple[float, float, float]
+    section_relative_offset: float
+
+
 class ModernGLRenderer:
     """Demand-driven renderer with one persistent resource group per handle."""
 
@@ -936,6 +955,7 @@ class ModernGLRenderer:
             tuple[int, int, MeshHandle, str, object]
         ] = []
         self._uniform_value_cache: dict[tuple[int, str], object] = {}
+        self._world_bounds_cache: dict[int, tuple[int, np.ndarray, float]] = {}
         self.pick_dirty = True
         self.draw_calls = 0
         self.frame_count = 0
@@ -1045,6 +1065,7 @@ class ModernGLRenderer:
         group = self._groups.pop(id(handle), None)
         if group is not None:
             for _chunk_id, chunk in group.chunks:
+                self._world_bounds_cache.pop(id(chunk), None)
                 chunk.release()
             self.pick_dirty = True
 
@@ -1536,12 +1557,21 @@ class ModernGLRenderer:
         self.pick_dirty = True
 
     @staticmethod
-    def _camera_matrices(camera: Camera3D, width: int, height: int) -> tuple[np.ndarray, np.ndarray]:
+    def _camera_frame(
+        camera: Camera3D,
+        viewport: tuple[int, int],
+        section_plane: Optional[SectionPlane],
+    ) -> _CameraFrame:
+        """Calculate camera-dependent values once for a complete render pass."""
+
+        width, height = viewport
         right, up, forward = camera.basis()
+        right_vector = np.asarray(right.to_tuple(), dtype=np.float64)
+        up_vector = np.asarray(up.to_tuple(), dtype=np.float64)
+        forward_vector = np.asarray(forward.to_tuple(), dtype=np.float64)
+        position = np.asarray(camera.position.to_tuple(), dtype=np.float64)
         view = np.eye(4, dtype=np.float64)
-        view[:3, :3] = np.asarray(
-            [right.to_tuple(), up.to_tuple(), (-forward).to_tuple()], dtype=np.float64
-        )
+        view[:3, :3] = np.asarray((right_vector, up_vector, -forward_vector))
         aspect = width / max(1.0, float(height))
         scale = 1.0 / math.tan(camera.fov / 2.0)
         near, far = float(camera.near), float(camera.far)
@@ -1551,39 +1581,54 @@ class ModernGLRenderer:
         projection[2, 2] = (far + near) / (near - far)
         projection[2, 3] = 2.0 * far * near / (near - far)
         projection[3, 2] = -1.0
-        return view, projection
+        section_enabled = section_plane is not None and section_plane.enabled
+        section_normal = (
+            section_plane.normal.to_tuple()
+            if section_enabled
+            else (1.0, 0.0, 0.0)
+        )
+        return _CameraFrame(
+            (int(width), int(height)),
+            position,
+            right_vector,
+            up_vector,
+            forward_vector,
+            view,
+            projection,
+            near,
+            far,
+            math.tan(camera.fov * 0.5),
+            section_enabled,
+            section_normal,
+            (
+                float(section_plane.offset - np.dot(section_normal, position))
+                if section_enabled
+                else 0.0
+            ),
+        )
 
     def _uniforms(
         self,
         program: Any,
         chunk: _Chunk,
-        camera: Camera3D,
-        viewport: tuple[int, int],
-        section_plane: Optional[SectionPlane],
+        frame: _CameraFrame,
     ) -> None:
-        width, height = viewport
-        view, projection = self._camera_matrices(camera, width, height)
         transform = chunk.handle.transform
         transformed_origin = transform[:3, :3] @ chunk.origin + transform[:3, 3]
-        camera_position = np.asarray(camera.position.to_tuple(), dtype=np.float64)
-        program["u_view_rotation"].write(_matrix_bytes(view))
-        program["u_projection"].write(_matrix_bytes(projection))
+        program["u_view_rotation"].write(_matrix_bytes(frame.view))
+        program["u_projection"].write(_matrix_bytes(frame.projection))
         program["u_linear"].write(_matrix_bytes(transform[:3, :3]))
         program["u_origin_from_camera"].value = tuple(
-            np.asarray(transformed_origin - camera_position, dtype=np.float32)
+            np.asarray(transformed_origin - frame.position, dtype=np.float32)
         )
         program["u_deformation_scale"].value = chunk.handle.deformation_scale
         if "u_viewport" in program:
-            program["u_viewport"].value = (float(width), float(height))
+            program["u_viewport"].value = tuple(float(value) for value in frame.viewport)
         if "u_near" in program:
-            program["u_near"].value = float(camera.near)
-        enabled = section_plane is not None and section_plane.enabled
-        program["u_section_enabled"].value = enabled
-        normal = section_plane.normal.to_tuple() if enabled else (1.0, 0.0, 0.0)
-        program["u_section_normal"].value = normal
-        program["u_section_relative_offset"].value = (
-            float(section_plane.offset - np.dot(normal, camera_position)) if enabled else 0.0
-        )
+            program["u_near"].value = frame.near
+        program["u_section_enabled"].value = frame.section_enabled
+        program["u_section_normal"].value = frame.section_normal
+        program["u_section_relative_offset"].value = frame.section_relative_offset
 
     def render(
         self,
@@ -1609,23 +1654,21 @@ class ModernGLRenderer:
         framebuffer.clear(*clear_color, depth=1.0)
         self.ctx.enable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
         self.draw_calls = 0
+        frame = self._camera_frame(camera, viewport, section_plane)
         draw_items = [
             (group, chunk)
             for group in self._groups.values()
             if not group.handle.removed and group.handle.visible
             for _chunk_id, chunk in group.chunks
-            if self._chunk_visible(chunk, camera, viewport)
+            if self._chunk_visible(chunk, frame)
         ]
-        camera_position = np.asarray(camera.position.to_tuple(), dtype=np.float64)
         transparent = sorted(
             (item for item in draw_items if item[0].opacity < 0.999),
             key=lambda item: (
                 item[0].layer,
                 -float(
                     np.linalg.norm(
-                        item[0].handle.transform[:3, :3] @ item[1].origin
-                        + item[0].handle.transform[:3, 3]
-                        - camera_position
+                        self._chunk_world_bounds(item[1])[0] - frame.position
                     )
                 ),
             ),
@@ -1647,7 +1690,7 @@ class ModernGLRenderer:
                 self.ctx.disable(moderngl.CULL_FACE)
             if group.depth_only:
                 self.ctx.color_mask = (False, False, False, False)
-            self._uniforms(self.render_program, chunk, camera, viewport, section_plane)
+            self._uniforms(self.render_program, chunk, frame)
             chunk.bind_fields(self.render_program, self._set_uniform_value)
             self._set_uniform_value(self.render_program, "u_color", _rgb(chunk.color))
             self._set_uniform_value(
@@ -1751,7 +1794,7 @@ class ModernGLRenderer:
                 line_without_depth = group.line_overlay or not occlude_lines
                 if line_without_depth:
                     self.ctx.disable(moderngl.DEPTH_TEST)
-                self._uniforms(self.line_program, chunk, camera, viewport, section_plane)
+                self._uniforms(self.line_program, chunk, frame)
                 chunk.bind_line_semantics(
                     self.line_program, self._set_uniform_value
                 )
@@ -1788,7 +1831,7 @@ class ModernGLRenderer:
                 point_without_depth = group.point_overlay
                 if point_without_depth:
                     self.ctx.disable(moderngl.DEPTH_TEST)
-                self._uniforms(self.point_program, chunk, camera, viewport, section_plane)
+                self._uniforms(self.point_program, chunk, frame)
                 chunk.bind_point_semantics(
                     self.point_program, self._set_uniform_value
                 )
@@ -1830,26 +1873,31 @@ class ModernGLRenderer:
         self.ctx.depth_mask = True
         self.ctx.disable(moderngl.BLEND)
 
-    @staticmethod
-    def _chunk_visible(
-        chunk: _Chunk,
-        camera: Camera3D,
-        viewport: tuple[int, int],
-    ) -> bool:
-        transform = chunk.handle.transform
-        center = transform[:3, :3] @ chunk.origin + transform[:3, 3]
-        relative = center - np.asarray(camera.position.to_tuple(), dtype=np.float64)
-        right, up, forward = camera.basis()
-        x = float(np.dot(relative, right.to_tuple()))
-        y = float(np.dot(relative, up.to_tuple()))
-        depth = float(np.dot(relative, forward.to_tuple()))
-        radius = chunk.radius * float(np.linalg.norm(transform[:3, :3], ord=2))
-        if depth + radius < camera.near or depth - radius > camera.far:
+    def _chunk_world_bounds(self, chunk: _Chunk) -> tuple[np.ndarray, float]:
+        """Return exact transformed bounds, caching until the transform changes."""
+
+        transform_generation = chunk.handle.generations.transform
+        key = id(chunk)
+        cached = self._world_bounds_cache.get(key)
+        if cached is None or cached[0] != transform_generation:
+            transform = chunk.handle.transform
+            center = transform[:3, :3] @ chunk.origin + transform[:3, 3]
+            radius = chunk.radius * float(np.linalg.norm(transform[:3, :3], ord=2))
+            self._world_bounds_cache[key] = (transform_generation, center, radius)
+            return center, radius
+        return cached[1], cached[2]
+
+    def _chunk_visible(self, chunk: _Chunk, frame: _CameraFrame) -> bool:
+        center, radius = self._chunk_world_bounds(chunk)
+        relative = center - frame.position
+        x = float(np.dot(relative, frame.right))
+        y = float(np.dot(relative, frame.up))
+        depth = float(np.dot(relative, frame.forward))
+        if depth + radius < frame.near or depth - radius > frame.far:
             return False
-        tangent = math.tan(camera.fov * 0.5)
-        visible_depth = max(float(camera.near), depth)
-        half_height = visible_depth * tangent
-        half_width = half_height * viewport[0] / max(1.0, float(viewport[1]))
+        visible_depth = max(frame.near, depth)
+        half_height = visible_depth * frame.frustum_tangent
+        half_width = half_height * frame.viewport[0] / max(1.0, float(frame.viewport[1]))
         return abs(x) <= half_width + radius and abs(y) <= half_height + radius
 
     def _ensure_pick_target(self, viewport: tuple[int, int]) -> None:
@@ -1895,6 +1943,7 @@ class ModernGLRenderer:
         base = 0
         for group in list(self._groups.values()):
             self._sync(group)
+        frame = self._camera_frame(camera, viewport, section_plane)
         for group in sorted(self._groups.values(), key=lambda value: value.layer):
             if group.handle.removed or not group.handle.visible:
                 continue
@@ -1919,7 +1968,7 @@ class ModernGLRenderer:
                     self.ctx.enable(moderngl.CULL_FACE)
                 else:
                     self.ctx.disable(moderngl.CULL_FACE)
-                self._uniforms(self.pick_program, chunk, camera, viewport, section_plane)
+                self._uniforms(self.pick_program, chunk, frame)
                 chunk.bind_fields(self.pick_program, self._set_uniform_value)
                 self._set_uniform_value(self.pick_program, "u_pick_base", base)
                 front_stipple, back_stipple = _stipple_windows(
@@ -1971,9 +2020,7 @@ class ModernGLRenderer:
                     line_without_depth = group.line_overlay or not occlude_lines
                     if line_without_depth:
                         self.ctx.disable(moderngl.DEPTH_TEST)
-                    self._uniforms(
-                        self.line_pick_program, chunk, camera, viewport, section_plane
-                    )
+                    self._uniforms(self.line_pick_program, chunk, frame)
                     chunk.bind_line_semantics(
                         self.line_pick_program, self._set_uniform_value
                     )
@@ -2011,9 +2058,7 @@ class ModernGLRenderer:
                     point_without_depth = group.point_overlay
                     if point_without_depth:
                         self.ctx.disable(moderngl.DEPTH_TEST)
-                    self._uniforms(
-                        self.point_pick_program, chunk, camera, viewport, section_plane
-                    )
+                    self._uniforms(self.point_pick_program, chunk, frame)
                     chunk.bind_point_semantics(
                         self.point_pick_program, self._set_uniform_value
                     )

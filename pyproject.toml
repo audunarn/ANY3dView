@@ -4,11 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ANY3dView"
-version = "0.5.4"
+version = "0.5.5"
 description = "Backend-neutral geometry, camera, shading, clipping and selection core for scientific 3D viewers"
 readme = "README.md"
-license = "GPL-3.0-or-later"
-license-files = ["LICENSE"]
+license = "MPL-2.0"
+license-files = [
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "src/any3dview/gpu/tkgl/license.terms",
+]
 authors = [
     { name = "Audun Arnesen Nyhus", email = "audunarn@gmail.com" },
 ]
@@ -33,7 +37,7 @@ dependencies = ["numpy"]
 
 [project.optional-dependencies]
 dev = ["pytest", "build", "twine"]
-gpu = ["moderngl>=5.12,<6", "tkinter-gl>=1.1,<2", "Pillow>=10,<13"]
+gpu = ["moderngl>=5.12,<6", "Pillow>=10,<13"]
 geometry = ["ANYgeometry>=0.4.0,<0.5", "mapbox-earcut>=1.0,<2"]
 
 [project.urls]
@@ -46,6 +50,17 @@ any3dview-demo = "any3dview.demo:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"any3dview.gpu" = [
+    "tkgl/README",
+    "tkgl/PROVENANCE.md",
+    "tkgl/license.terms",
+    "tkgl/darwin/Tkgl1.2.1/*",
+    "tkgl/linux-aarch64/Tkgl1.2.1/*",
+    "tkgl/linux-x86_64/Tkgl1.2.1/*",
+    "tkgl/win32/TkGL1.2.1/*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

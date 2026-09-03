@@ -147,6 +147,7 @@ class Any3DView(ttk.Frame):
         self._selection_index_key: object = None
         self._mouse = (0, 0)
         self._drag = ""
+        self._wheel_finish_after_id: Optional[str] = None
         self._selection_press: Optional[tuple[int, int]] = None
         self._selection_current: Optional[tuple[int, int]] = None
         self._selection_points: list[tuple[int, int]] = []
@@ -553,6 +554,19 @@ class Any3DView(ttk.Frame):
         self._renderer.pick_dirty = True
         self._selection_index = None
         self.redraw()
+        if self._wheel_finish_after_id is not None:
+            try:
+                self.after_cancel(self._wheel_finish_after_id)
+            except tk.TclError:
+                pass
+        self._wheel_finish_after_id = self.after(120, self._finish_wheel_zoom)
+
+    def _finish_wheel_zoom(self) -> None:
+        """Restore precise screen-space overlays after wheel input settles."""
+
+        self._wheel_finish_after_id = None
+        if not self._closed:
+            self.redraw()
 
     def _on_modifier_key(self, event: tk.Event) -> None:
         keysym = str(getattr(event, "keysym", "")).lower()
@@ -2384,6 +2398,7 @@ class Any3DView(ttk.Frame):
         width: int = 170,
         value_range: Optional[tuple[float, float]] = None,
         colors: Optional[Sequence[str]] = None,
+        font_size: int = 10,
     ) -> None:
         clean = sorted({float(value) for value in values if math.isfinite(float(value))})
         if not clean and value_range is None:
@@ -2403,6 +2418,7 @@ class Any3DView(ttk.Frame):
             "values": clean, "minimum": minimum, "maximum": maximum,
             "unit": str(unit), "title": str(title), "width": max(130, int(width)),
             "colors": color_values,
+            "font_size": max(8, min(28, int(font_size))),
         }
         self.redraw()
 
@@ -3114,14 +3130,21 @@ class Any3DView(ttk.Frame):
         legend = self._thickness_legend
         if legend is not None:
             legend_width = int(legend["width"])
+            font_size = int(legend.get("font_size", 10))
+            title_font_size = min(30, font_size + 1)
+            row_height = max(20, font_size + 8)
             x0, y0 = width - legend_width - 8, 8
             values = list(legend["values"])
             continuous = len(values) > 10 or not values
-            box_height = 132 if continuous else 32 + 20 * len(values)
+            box_height = (
+                max(150, 42 + 8 * font_size)
+                if continuous
+                else 36 + row_height * len(values)
+            )
             hud.quad((x0, y0, width - 8, y0 + box_height), "#f8fafc", alpha=0.96)
             hud.rectangle((x0, y0, width - 8, y0 + box_height), "#64748b")
             hud.text((x0 + 7, y0 + 6), legend["title"], "#0f172a",
-                     font=("Segoe UI", 9, "bold"), anchor="nw")
+                     font=("Segoe UI", title_font_size, "bold"), anchor="nw")
             if continuous:
                 minimum, maximum = legend["minimum"], legend["maximum"]
                 for index in range(48):
@@ -3129,12 +3152,13 @@ class Any3DView(ttk.Frame):
                     color = _interpolate_thickness_color(
                         maximum - fraction * (maximum - minimum), minimum, maximum
                     )
-                    top = y0 + 26 + 1.7 * index
+                    top = y0 + title_font_size + 18 + 1.7 * index
                     hud.quad((x0 + 8, top, x0 + 28, top + 2.2), color)
-                hud.text((x0 + 35, y0 + 26), f"{maximum:g} {legend['unit']}",
-                         "#0f172a", anchor="nw")
-                hud.text((x0 + 35, y0 + 108), f"{minimum:g} {legend['unit']}",
-                         "#0f172a", anchor="sw")
+                scale_top = y0 + title_font_size + 18
+                hud.text((x0 + 35, scale_top), f"{maximum:g} {legend['unit']}",
+                         "#0f172a", font=("Segoe UI", font_size, ""), anchor="nw")
+                hud.text((x0 + 35, scale_top + 82), f"{minimum:g} {legend['unit']}",
+                         "#0f172a", font=("Segoe UI", font_size, ""), anchor="sw")
             else:
                 colors = list(legend["colors"])
                 for row, value in enumerate(reversed(values)):
@@ -3142,10 +3166,14 @@ class Any3DView(ttk.Frame):
                     color = colors[source_index] if colors else _interpolate_thickness_color(
                         value, legend["minimum"], legend["maximum"]
                     )
-                    top = y0 + 26 + 20 * row
-                    hud.quad((x0 + 8, top, x0 + 25, top + 13), color)
-                    hud.text((x0 + 31, top + 6), f"{value:g} {legend['unit']}",
-                             "#0f172a", anchor="w")
+                    top = y0 + title_font_size + 18 + row_height * row
+                    swatch_height = max(13, font_size)
+                    hud.quad((x0 + 8, top, x0 + 25, top + swatch_height), color)
+                    hud.text(
+                        (x0 + 31, top + swatch_height / 2.0),
+                        f"{value:g} {legend['unit']}",
+                        "#0f172a", font=("Segoe UI", font_size, ""), anchor="w",
+                    )
 
         active = set(self._highlighted_tags)
         if self._preselected_key:
@@ -3162,6 +3190,7 @@ class Any3DView(ttk.Frame):
             # than the Tk fallback.  Defer that optional outline until the
             # pan/orbit gesture ends.
             and not getattr(self, "_drag", "")
+            and getattr(self, "_wheel_finish_after_id", None) is None
             and self._display_primitive_count(_CPU_POINT_STACK_LIMIT)
             <= _CPU_POINT_STACK_LIMIT
         ):
@@ -3290,6 +3319,12 @@ class Any3DView(ttk.Frame):
             return
         self._closed = True
         self.stop_animation()
+        if self._wheel_finish_after_id is not None:
+            try:
+                self.after_cancel(self._wheel_finish_after_id)
+            except tk.TclError:
+                pass
+            self._wheel_finish_after_id = None
         if self._update_poll_id is not None:
             try:
                 self.after_cancel(self._update_poll_id)

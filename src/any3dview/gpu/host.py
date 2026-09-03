@@ -6,12 +6,7 @@ import os
 import sys
 from typing import Callable, Protocol
 
-try:
-    from tkinter_gl import GLCanvas
-except ImportError as error:  # pragma: no cover - exercised by isolated wheel tests
-    raise ImportError(
-        "ANY3dView GPU support requires the 'gpu' extra: pip install ANY3dView[gpu]"
-    ) from error
+from ._tkgl import GLCanvas
 
 
 class GLHostProtocol(Protocol):

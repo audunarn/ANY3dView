@@ -231,7 +231,7 @@ python -m build
 twine check dist/*
 ```
 
-Native tkinter-gl lifecycle tests are opt-in:
+Native TkGL lifecycle tests are opt-in:
 
 ```powershell
 $env:ANY3DVIEW_RUN_GUI_TESTS = "1"
@@ -240,4 +240,9 @@ python -m pytest tests/test_gpu_widget.py
 
 ## License
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+Starting with version 0.5.5, ANY3dView is licensed under the Mozilla Public
+License 2.0. See [LICENSE](LICENSE). Earlier releases remain under the license
+terms that accompanied those releases.
+
+The optional GPU backend bundles the separately licensed native TkGL component;
+see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

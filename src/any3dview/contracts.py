@@ -250,6 +250,7 @@ class ViewerBackend(Protocol):
         width: int = 170,
         value_range: Optional[tuple[float, float]] = None,
         colors: Optional[Sequence[str]] = None,
+        font_size: int = 10,
     ) -> None: ...
 
     def clear_thickness_legend(self) -> None: ...

@@ -32,6 +32,8 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
+      - name: Verify licensing and dependency policy
+        run: python tools/check_licensing.py
       - name: Download the complete prebuilt release asset set
         env:
           GH_TOKEN: ${{ github.token }}
@@ -44,16 +46,16 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           python tools/verify_release_authority.py \
-            --ledger docs/release/any3dview-0.5.4-ledger.json \
+            --ledger docs/release/any3dview-0.5.5-ledger.json \
             --assets release-assets \
             --output dist \
             --tag "$RELEASE_TAG" \
             --protected-ref refs/remotes/origin/main \
-            --expected-terminal ACCEPTED_ANY3DVIEW_0_5_4_RELEASE \
+            --expected-terminal ACCEPTED_ANY3DVIEW_0_5_5_RELEASE \
             --distribution ANY3dView \
-            --version 0.5.4 \
-            --artifact any3dview-0.5.4-py3-none-any.whl \
-            --artifact any3dview-0.5.4.tar.gz
+            --version 0.5.5 \
+            --artifact any3dview-0.5.5-py3-none-any.whl \
+            --artifact any3dview-0.5.5.tar.gz
       - name: Publish exact ledger-authorized distributions
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:

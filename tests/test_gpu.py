@@ -386,7 +386,8 @@ def test_explicit_gpu_disable_has_actionable_diagnostic(monkeypatch):
 
 def test_gpu_extra_is_present_in_development_environment():
     assert importlib.util.find_spec("moderngl") is not None
-    assert importlib.util.find_spec("tkinter_gl") is not None
+    assert importlib.util.find_spec("PIL") is not None
+    assert importlib.util.find_spec("any3dview.gpu._tkgl") is not None
 
 
 class _FramebufferHost:

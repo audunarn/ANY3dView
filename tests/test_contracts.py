@@ -70,6 +70,24 @@ def test_gpu_legacy_public_surface_contains_tk_compatibility_methods():
     signature = inspect.signature(Any3DView.add_mesh_arrays)
     assert signature.parameters["point_color"].default == "#2563eb"
     assert signature.parameters["point_size"].default == 6
+    legend_signature = inspect.signature(Any3DView.set_thickness_legend)
+    assert legend_signature.parameters["font_size"].default == 10
+
+
+def test_gpu_legend_retains_requested_text_size(monkeypatch):
+    pytest.importorskip("moderngl")
+    from any3dview.gpu import Any3DView
+
+    viewer = Any3DView.__new__(Any3DView)
+    viewer._thickness_legend = None
+    monkeypatch.setattr(viewer, "redraw", lambda: None)
+
+    viewer.set_thickness_legend(
+        (0.0, 1.0), title="Displacement", width=220, font_size=12
+    )
+
+    assert viewer._thickness_legend["width"] == 220
+    assert viewer._thickness_legend["font_size"] == 12
 
 
 def test_gpu_legacy_face_conversion_batches_equal_colours(monkeypatch):
@@ -357,6 +375,41 @@ def test_gpu_camera_drag_does_not_build_projected_highlight_index(monkeypatch):
         viewer,
         "_projected_selection_index",
         lambda: (_ for _ in ()).throw(AssertionError("camera-time CPU projection")),
+    )
+
+    viewer._render_hud((800, 600))
+
+
+def test_gpu_wheel_zoom_does_not_build_projected_highlight_index(monkeypatch):
+    pytest.importorskip("moderngl")
+    from any3dview.gpu import Any3DView
+
+    class Hud:
+        def begin(self, _viewport):
+            pass
+
+        def render(self):
+            pass
+
+    viewer = Any3DView.__new__(Any3DView)
+    viewer._hud = Hud()
+    viewer._world_text = []
+    viewer._section_plane = None
+    viewer._show_axis_indicator = False
+    viewer.show_axis_ruler = False
+    viewer._thickness_legend = None
+    viewer._highlighted_tags = frozenset(("geometry.face:1",))
+    viewer._preselected_key = None
+    viewer._selection_dragging = False
+    viewer._selection_press = None
+    viewer._selection_current = None
+    viewer._drag = ""
+    viewer._wheel_finish_after_id = "after#zoom"
+    monkeypatch.setattr(viewer, "_display_primitive_count", lambda _limit: 100)
+    monkeypatch.setattr(
+        viewer,
+        "_projected_selection_index",
+        lambda: (_ for _ in ()).throw(AssertionError("wheel-time CPU projection")),
     )
 
     viewer._render_hud((800, 600))

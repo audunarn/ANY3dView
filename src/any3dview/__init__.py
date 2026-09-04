@@ -43,6 +43,7 @@ from .semantic import SemanticRef, VisibilityState
 from .scheduler import ViewerScheduler
 from .errors import GPUUnavailableError
 from .factory import create_viewer
+from .hosts import TkViewerHostAdapter, ViewerHostAdapter
 from .shading import Light
 from .shapes import Mesh
 
@@ -58,6 +59,8 @@ __all__ = [
     "DirtyGenerations",
     "ViewerCapabilities",
     "ViewerBackend",
+    "ViewerHostAdapter",
+    "TkViewerHostAdapter",
     "ViewerState",
     "ViewerScheduler",
     "ViewerCommand",

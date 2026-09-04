@@ -7,8 +7,10 @@ on NumPy and imports without Tk, OpenGL, ANYtk3D or ANYgeometry.
 ANY3dView contains the toolkit-independent core shared by rendering backends.
 It does not create windows or process native input during normal core imports.
 [ANYtk3D](https://github.com/audunarn/ANYtk3D) provides the compatible Tk
-Canvas backend. An optional ModernGL backend embeds in the same Tk application
-without adding a second event loop.
+Canvas backend. The default host embeds the optional ModernGL backend in the
+same Tk application without adding a second event loop. Other desktop
+toolkits can provide a `ViewerHostAdapter` without changing scene data or the
+renderer contract.
 
 ## Installation
 
@@ -82,7 +84,7 @@ active masks, transforms, visibility, local chunk replacement and idempotent
 removal. Independent generation counters let backends update only changed
 buffers or display batches. Cross-thread producers can call
 `viewer.submit_update(handle.update_displacements, immutable_array)`; the
-callback runs on the viewer's owning Tk thread.
+callback runs on the viewer's owning UI thread.
 
 Packed CSR owner tables avoid allocating owner objects per primitive.
 `EntityHandle` or `PickOwner` values are materialized only for selection hits.
@@ -112,6 +114,16 @@ viewer = create_viewer(parent, backend="auto")
 `backend="gpu"` requires OpenGL 3.3 and raises `GPUUnavailableError` with
 diagnostics on failure. `backend="software"` lazily imports ANYtk3D. `auto`
 tries GPU first and falls back to software while retaining diagnostics.
+The omitted `host` selects `TkViewerHostAdapter`. A different toolkit supplies
+an adapter that creates its native widget:
+
+```python
+viewer = create_viewer(qt_parent, backend="auto", host=qt_host)
+```
+
+The returned widget implements `ViewerBackend`; renderer-neutral application
+code does not import its desktop toolkit. See
+[`docs/HOST_ADAPTERS.md`](docs/HOST_ADAPTERS.md).
 
 The GPU path provides persistent indexed buffers, frustum culling,
 camera-relative float32 positions, derivative flat normals, instanced

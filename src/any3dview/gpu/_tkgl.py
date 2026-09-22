@@ -58,6 +58,11 @@ class GLCanvas(tk.Widget):
         if self.profile:
             widget_options["profile"] = self.profile
         tk.Widget.__init__(self, parent, "tkgl", cnf or {}, widget_options)
+        if sys.platform == "linux":
+            # Realize the X drawable before ModernGL detects the current context.
+            # winfo_id creates native ancestors without mapping the viewer or
+            # entering a nested event loop during construction.
+            self.winfo_id()
         self.bind("<Expose>", self._queue_draw, add="+")
         self.bind("<Map>", self._queue_draw, add="+")
         self.update_idletasks()

@@ -1,0 +1,192 @@
+name: Viewer compatibility
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      peer_ref:
+        description: Optional sibling viewer branch or commit for coordinated changes
+        required: false
+        type: string
+      mesh_ref:
+        description: Optional ANYmesh branch or commit for coordinated dependency changes
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: viewer-tests-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      peer: ${{ steps.refs.outputs.peer }}
+      mesh: ${{ steps.refs.outputs.mesh }}
+      fem: ${{ steps.refs.outputs.fem }}
+      structure: ${{ steps.refs.outputs.structure }}
+    steps:
+      - name: Freeze cross-repository source identities
+        id: refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PEER_REF: ${{ inputs.peer_ref || (startsWith(github.head_ref || github.ref_name, 'codex/viewer-upgrades-') && (github.head_ref || github.ref_name)) || 'main' }}
+          MESH_REF: ${{ inputs.mesh_ref || (startsWith(github.head_ref || github.ref_name, 'codex/viewer-upgrades-') && (github.head_ref || github.ref_name)) || 'main' }}
+        shell: bash
+        run: |
+          peer=$(gh api "repos/audunarn/ANYtk3D/commits/$PEER_REF" --jq .sha)
+          mesh=$(gh api "repos/audunarn/ANYmesh/commits/$MESH_REF" --jq .sha)
+          fem=$(gh api repos/audunarn/ANYfem/commits/HEAD --jq .sha)
+          structure=$(gh api repos/audunarn/ANYstructure/commits/HEAD --jq .sha)
+          printf 'peer=%s\nmesh=%s\nfem=%s\nstructure=%s\n' "$peer" "$mesh" "$fem" "$structure" | tee -a "$GITHUB_OUTPUT"
+  core:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          path: ANY3dView
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: audunarn/ANYtk3D
+          ref: ${{ needs.resolve.outputs.peer }}
+          path: ANYtk3D
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install paired viewers without geometry or GPU extras
+        run: python -m pip install -e "./ANY3dView[dev]" -e "./ANYtk3D[dev,capture]"
+      - name: Headless contracts for both viewers
+        shell: bash
+        run: |
+          cd ANY3dView
+          python -m pytest -q -m "not gui"
+          cd ../ANYtk3D
+          python -m pytest -q -m "not gui and not native_gui"
+      - name: Build distributions and check metadata
+        shell: bash
+        run: |
+          python -m build --outdir wheelhouse ANY3dView
+          python -m build --outdir wheelhouse ANYtk3D
+          python -m twine check wheelhouse/*
+      - name: Smoke test installed wheel pair outside the source trees
+        shell: bash
+        run: |
+          python -m pip install --force-reinstall --no-deps wheelhouse/*.whl
+          cd "${{ runner.temp }}"
+          python -I -c "import any3dview, anytk3d; assert anytk3d.Point3D is any3dview.Point3D; from anytk3d.capture import render_canvas"
+  geometry:
+    needs: resolve
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.14"]
+        geometry: ["ANYgeometry==0.4.0", "ANYgeometry>=0.4.3,<0.5"]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          path: ANY3dView
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: audunarn/ANYtk3D
+          ref: ${{ needs.resolve.outputs.peer }}
+          path: ANYtk3D
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e "./ANY3dView[dev,geometry]" -e "./ANYtk3D[dev,capture]"
+      - run: python -m pip install "${{ matrix.geometry }}"
+      - name: Require optional dependencies and exercise geometry contracts
+        working-directory: ANY3dView
+        run: |
+          python -c "import anygeometry, mapbox_earcut"
+          python -m pytest -q tests/test_anygeometry_adapter.py tests/test_tessellation_quality.py
+  desktop:
+    needs: resolve
+    runs-on: ubuntu-latest
+    env:
+      ANY3DVIEW_RUN_GUI_TESTS: "1"
+      ANYTK3D_RUN_GUI_TESTS: "1"
+      LIBGL_ALWAYS_SOFTWARE: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          path: ANY3dView
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: audunarn/ANYtk3D
+          ref: ${{ needs.resolve.outputs.peer }}
+          path: ANYtk3D
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.13"
+      - run: sudo apt-get update && sudo apt-get install -y xvfb xauth libgl1-mesa-dri libgl-dev
+      - run: python -m pip install -e "./ANY3dView[dev,gpu,geometry]" -e "./ANYtk3D[dev,capture]"
+      - name: Require OpenGL before running desktop contracts
+        run: xvfb-run -a python -c "import moderngl; c=moderngl.create_standalone_context(require=330); c.release()"
+      - name: GPU and software desktop tests
+        shell: bash
+        run: |
+          cd ANY3dView
+          xvfb-run -a python -m pytest -q
+          cd ../ANYtk3D
+          xvfb-run -a python -m pytest -q -m "not native_gui"
+
+  consumers:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          path: ANY3dView
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: audunarn/ANYtk3D
+          ref: ${{ needs.resolve.outputs.peer }}
+          path: ANYtk3D
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: audunarn/ANYfem
+          ref: ${{ needs.resolve.outputs.fem }}
+          path: ANYfem
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: audunarn/ANYstructure
+          ref: ${{ needs.resolve.outputs.structure }}
+          path: ANYstructure
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: audunarn/ANYmesh
+          ref: ${{ needs.resolve.outputs.mesh }}
+          path: ANYmesh
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.13"
+      - name: Resolve and install the consumer dependency graph
+        run: python -m pip install -e "./ANY3dView[dev,gpu,geometry]" -e "./ANYtk3D[dev,capture]" -e "./ANYmesh[gui3d]" -e "./ANYfem[gui,dev]" -e "./ANYstructure[dev]"
+      - name: Consumer viewport contracts
+        shell: bash
+        run: |
+          cd ANYfem
+          python -m pytest -q tests/test_viewer_backend_integration.py tests/test_viewport_commercial_selection.py
+          cd ../ANYstructure
+          python -m pytest -q tests/test_viewer_backend.py

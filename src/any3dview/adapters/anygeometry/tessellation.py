@@ -169,6 +169,8 @@ def tessellate_face(model, face_id: int, policy: TessellationPolicy, lod: int) -
             raise UnsupportedDisplayGeometry("face boundary is degenerate")
         axis = int(np.argmax(np.abs(normal)))
         _, triangles = _triangulate([np.delete(loop, axis, axis=1) for loop in loops])
+        if len(triangles) > policy.max_surface_triangles:
+            raise UnsupportedDisplayGeometry(f"face {face_id} exceeds max_surface_triangles")
         return TessellatedFace(np.ascontiguousarray(np.concatenate(loops)), triangles)
     except UnsupportedDisplayGeometry:
         raise

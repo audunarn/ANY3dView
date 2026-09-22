@@ -19,7 +19,29 @@ concurrency:
   group: viewer-tests-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      peer: ${{ steps.refs.outputs.peer }}
+      mesh: ${{ steps.refs.outputs.mesh }}
+      fem: ${{ steps.refs.outputs.fem }}
+      structure: ${{ steps.refs.outputs.structure }}
+    steps:
+      - name: Freeze cross-repository source identities
+        id: refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PEER_REF: ${{ inputs.peer_ref || (startsWith(github.head_ref || github.ref_name, 'codex/viewer-upgrades-') && (github.head_ref || github.ref_name)) || 'main' }}
+          MESH_REF: ${{ inputs.mesh_ref || (startsWith(github.head_ref || github.ref_name, 'codex/viewer-upgrades-') && (github.head_ref || github.ref_name)) || 'main' }}
+        shell: bash
+        run: |
+          peer=$(gh api "repos/audunarn/ANYtk3D/commits/$PEER_REF" --jq .sha)
+          mesh=$(gh api "repos/audunarn/ANYmesh/commits/$MESH_REF" --jq .sha)
+          fem=$(gh api repos/audunarn/ANYfem/commits/main --jq .sha)
+          structure=$(gh api repos/audunarn/ANYstructure/commits/main --jq .sha)
+          printf 'peer=%s\nmesh=%s\nfem=%s\nstructure=%s\n' "$peer" "$mesh" "$fem" "$structure" | tee -a "$GITHUB_OUTPUT"
   core:
+    needs: resolve
     strategy:
       fail-fast: false
       matrix:
@@ -34,7 +56,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: audunarn/ANYtk3D
-          ref: ${{ inputs.peer_ref || (startsWith(github.head_ref || github.ref_name, 'codex/viewer-upgrades-') && (github.head_ref || github.ref_name)) || '' }}
+          ref: ${{ needs.resolve.outputs.peer }}
           path: ANYtk3D
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
@@ -62,6 +84,7 @@ jobs:
           cd "${{ runner.temp }}"
           python -I -c "import any3dview, anytk3d; assert anytk3d.Point3D is any3dview.Point3D; from anytk3d.capture import render_canvas"
   geometry:
+    needs: resolve
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -77,7 +100,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: audunarn/ANYtk3D
-          ref: ${{ inputs.peer_ref || (startsWith(github.head_ref || github.ref_name, 'codex/viewer-upgrades-') && (github.head_ref || github.ref_name)) || '' }}
+          ref: ${{ needs.resolve.outputs.peer }}
           path: ANYtk3D
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
@@ -91,6 +114,7 @@ jobs:
           python -c "import anygeometry, mapbox_earcut"
           python -m pytest -q tests/test_anygeometry_adapter.py tests/test_tessellation_quality.py
   desktop:
+    needs: resolve
     runs-on: ubuntu-latest
     env:
       ANY3DVIEW_RUN_GUI_TESTS: "1"
@@ -104,7 +128,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: audunarn/ANYtk3D
-          ref: ${{ inputs.peer_ref || (startsWith(github.head_ref || github.ref_name, 'codex/viewer-upgrades-') && (github.head_ref || github.ref_name)) || '' }}
+          ref: ${{ needs.resolve.outputs.peer }}
           path: ANYtk3D
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
@@ -123,6 +147,7 @@ jobs:
           xvfb-run -a python -m pytest -q -m "not native_gui"
 
   consumers:
+    needs: resolve
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -132,23 +157,25 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: audunarn/ANYtk3D
-          ref: ${{ inputs.peer_ref || (startsWith(github.head_ref || github.ref_name, 'codex/viewer-upgrades-') && (github.head_ref || github.ref_name)) || '' }}
+          ref: ${{ needs.resolve.outputs.peer }}
           path: ANYtk3D
           persist-credentials: false
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: audunarn/ANYfem
+          ref: ${{ needs.resolve.outputs.fem }}
           path: ANYfem
           persist-credentials: false
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: audunarn/ANYstructure
+          ref: ${{ needs.resolve.outputs.structure }}
           path: ANYstructure
           persist-credentials: false
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: audunarn/ANYmesh
-          ref: ${{ inputs.mesh_ref || (startsWith(github.head_ref || github.ref_name, 'codex/viewer-upgrades-') && (github.head_ref || github.ref_name)) || '' }}
+          ref: ${{ needs.resolve.outputs.mesh }}
           path: ANYmesh
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1

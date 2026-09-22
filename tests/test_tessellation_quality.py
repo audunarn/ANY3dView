@@ -104,3 +104,21 @@ def test_translated_polygon_retains_area_without_cancellation():
     vertices, triangles = _triangulate([square])
     assert len(triangles) == 2
     assert np.array_equal(vertices, square)
+
+
+def test_planar_face_honors_surface_triangle_budget():
+    pytest.importorskip("mapbox_earcut")
+    import anygeometry
+    from any3dview.adapters.anygeometry.tessellation import tessellate_face
+    model = anygeometry.GeometryModel()
+    angles = np.linspace(0., 2*np.pi, 9)[:-1]
+    points = np.column_stack((np.cos(angles), np.sin(angles), np.zeros(8)))
+    face = model.add_plate(model.add_points(points))
+    # Exercise the adapter's legacy unparameterized planar record path.
+    record = model.faces[face]
+    model = SimpleNamespace(
+        faces={face: SimpleNamespace(support_surface=None, loop=record.loop, holes=record.holes)},
+        edges=model.edges, evaluate_edge_many=model.evaluate_edge_many,
+    )
+    with pytest.raises(UnsupportedDisplayGeometry, match="max_surface_triangles"):
+        tessellate_face(model, face, TessellationPolicy(max_surface_triangles=4), 2)

@@ -110,7 +110,7 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: "3.13"
-      - run: sudo apt-get update && sudo apt-get install -y xvfb xauth libgl1-mesa-dri
+      - run: sudo apt-get update && sudo apt-get install -y xvfb xauth libgl1-mesa-dri libgl-dev
       - run: python -m pip install -e "./ANY3dView[dev,gpu,geometry]" -e "./ANYtk3D[dev,capture]"
       - name: Require OpenGL before running desktop contracts
         run: xvfb-run -a python -c "import moderngl; c=moderngl.create_standalone_context(require=330); c.release()"

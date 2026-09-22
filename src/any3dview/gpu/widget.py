@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 import sys
 import time
 import tkinter as tk
@@ -259,6 +260,8 @@ class Any3DView(ttk.Frame):
             interaction_profile=self._interaction_profile,
             semantic_selection=self._semantic_selection,
             visibility=self._visibility_state,
+            light=deepcopy(self._light),
+            selection_config=self._selection_config,
         )
 
     def apply_view_state(self, state: ViewerState, *, redraw: bool = True) -> None:
@@ -288,6 +291,10 @@ class Any3DView(ttk.Frame):
         self._show_axis_indicator = bool(state.axis_indicator)
         self.show_axis_ruler = bool(state.axis_ruler)
         self.set_interaction_profile(profile)
+        if state.light is not None:
+            self._light = deepcopy(state.light)
+        if state.selection_config is not None:
+            self._selection_config = state.selection_config
         self._semantic_selection = semantic_refs(state.semantic_selection)
         self._visibility_state = state.visibility
         self._renderer.pick_dirty = True

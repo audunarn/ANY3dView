@@ -64,6 +64,15 @@ class ViewerState:
     interaction_profile: str = "legacy"
     semantic_selection: tuple[SemanticRef, ...] = ()
     visibility: VisibilityState = VisibilityState()
+    # None preserves the receiving backend's settings for older callers.
+    light: Optional[Light] = None
+    selection_config: Optional[SelectionConfig] = None
+
+    def __post_init__(self) -> None:
+        if self.light is not None and not isinstance(self.light, Light):
+            raise TypeError("light must be Light or None")
+        if self.selection_config is not None and not isinstance(self.selection_config, SelectionConfig):
+            raise TypeError("selection_config must be SelectionConfig or None")
 
 
 Projection = Optional[tuple[float, float, float]]

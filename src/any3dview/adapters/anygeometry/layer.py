@@ -142,7 +142,12 @@ class GeometryLayer:
             self._executor = ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="any3dview-geometry"
             )
-        self._rebuild_all()
+        try:
+            self._rebuild_all()
+        except Exception:
+            # A failed initial attachment must not retain callbacks or a worker.
+            self.close()
+            raise
         if self.policy.threaded_updates:
             self._schedule_poll()
         return self
@@ -302,7 +307,7 @@ class GeometryLayer:
                 made = self._cached_face(face_id)
             except UnsupportedDisplayGeometry as error:
                 self.diagnostics.append(str(error))
-                continue
+                raise
             local = made.triangles[:, ::-1] if reversed_use else made.triangles
             positions.append(made.positions)
             triangles.append(local + cursor)
@@ -594,12 +599,14 @@ class GeometryLayer:
 
     def _replace_chunks(self, keys: Iterable[ChunkKey]) -> None:
         ordered = tuple(sorted(set(keys)))
+        # Validate all replacements before removing any currently displayed data.
+        snapshots = {key: self._build_chunk(key) for key in ordered}
         if self._executor is None:
             for key in ordered:
-                self._replace_chunk(key)
+                self._apply_chunk(key, snapshots[key])
             return
         for key in ordered:
-            snapshot = self._build_chunk(key)
+            snapshot = snapshots[key]
             self._job_serial += 1
             serial = self._job_serial
             future = self._executor.submit(self._finalize_snapshot, snapshot)
@@ -632,17 +639,18 @@ class GeometryLayer:
             handle.set_transform(transform)
 
     def _rebuild_all(self) -> None:
+        self._face_cache.clear()
+        self._edge_cache.clear()
+        snapshots = {key: self._build_chunk(key) for key in sorted(self._desired_chunks())}
         self._job_serial += 1
         self._pending_jobs.clear()
         for handle in tuple(self._handles.values()):
             handle.remove()
         self._handles.clear()
         self._entity_chunks.clear()
-        self._face_cache.clear()
-        self._edge_cache.clear()
         self.diagnostics.clear()
-        for key in sorted(self._desired_chunks()):
-            self._replace_chunk(key)
+        for key, snapshot in snapshots.items():
+            self._apply_chunk(key, snapshot)
         self.revision = self.model.revision
 
     def _closure(self, changes: Iterable[tuple[str, int]]) -> set[ChunkKey]:
@@ -695,7 +703,12 @@ class GeometryLayer:
         document_changed = False
         for change in pending:
             if change.revision_before != expected:
-                self._rebuild_all()
+                try:
+                    self._rebuild_all()
+                except Exception:
+                    for queued in pending:
+                        self._queue.put(queued)
+                    raise
                 return
             expected = change.revision_after
             changed = {
@@ -713,7 +726,13 @@ class GeometryLayer:
         desired = self._desired_chunks()
         affected.update(set(self._handles) - desired)
         affected.update(desired - set(self._handles))
-        self._replace_chunks(affected)
+        try:
+            self._replace_chunks(affected)
+        except Exception:
+            # Keep the unapplied revisions available for an explicit retry.
+            for change in pending:
+                self._queue.put(change)
+            raise
         if document_changed:
             self._apply_document_transform()
         self.revision = expected

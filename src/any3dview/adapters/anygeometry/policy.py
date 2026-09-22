@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import math
+from numbers import Integral
 
 
 class DisplayMode(str, Enum):
@@ -22,9 +24,16 @@ class TessellationPolicy:
     max_curve_segments: int = 128
     lod_levels: int = 3
     preserve_boundaries: bool = True
+    max_surface_triangles: int = 65536
 
     def __post_init__(self) -> None:
-        if self.chord_tolerance <= 0 or self.relative_chord_tolerance <= 0:
+        for name in ("max_curve_segments", "lod_levels", "max_surface_triangles"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, Integral):
+                raise ValueError(f"{name} must be an integer")
+        if any(not math.isfinite(value) or value <= 0 for value in (
+            self.chord_tolerance, self.relative_chord_tolerance, self.angular_tolerance
+        )):
             raise ValueError("tessellation tolerances must be positive")
         if self.angular_tolerance <= 0:
             raise ValueError("angular_tolerance must be positive")
@@ -32,6 +41,8 @@ class TessellationPolicy:
             raise ValueError("max_curve_segments must be at least two")
         if self.lod_levels < 1:
             raise ValueError("lod_levels must be positive")
+        if self.max_surface_triangles < 4:
+            raise ValueError("max_surface_triangles must be at least four")
 
 
 @dataclass(frozen=True, slots=True)

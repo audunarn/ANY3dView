@@ -37,8 +37,8 @@ jobs:
         run: |
           peer=$(gh api "repos/audunarn/ANYtk3D/commits/$PEER_REF" --jq .sha)
           mesh=$(gh api "repos/audunarn/ANYmesh/commits/$MESH_REF" --jq .sha)
-          fem=$(gh api repos/audunarn/ANYfem/commits/main --jq .sha)
-          structure=$(gh api repos/audunarn/ANYstructure/commits/main --jq .sha)
+          fem=$(gh api repos/audunarn/ANYfem/commits/HEAD --jq .sha)
+          structure=$(gh api repos/audunarn/ANYstructure/commits/HEAD --jq .sha)
           printf 'peer=%s\nmesh=%s\nfem=%s\nstructure=%s\n' "$peer" "$mesh" "$fem" "$structure" | tee -a "$GITHUB_OUTPUT"
   core:
     needs: resolve

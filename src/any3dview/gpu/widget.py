@@ -3256,7 +3256,10 @@ class Any3DView(ttk.Frame):
             preselection_color="#ffd166",
         )
         self._render_hud((width, height))
-        payload = self._renderer.ctx.screen.read(components=4, alignment=1)
+        # The default framebuffer may retain its size from context creation.
+        payload = self._renderer.ctx.screen.read(
+            viewport=(0, 0, width, height), components=4, alignment=1
+        )
         image = Image.frombytes("RGBA", (width, height), payload).transpose(
             Image.Transpose.FLIP_TOP_BOTTOM
         )

@@ -90,7 +90,40 @@ def test_gpu_legend_retains_requested_text_size(monkeypatch):
     assert viewer._thickness_legend["font_size"] == 12
 
 
-def test_gpu_legacy_face_conversion_batches_equal_colours(monkeypatch):
+def test_gpu_legacy_face_conversion_copies_per_face_colours_into_single_batch(monkeypatch):
+    pytest.importorskip("moderngl")
+    from any3dview.gpu import Any3DView
+
+    viewer = Any3DView.__new__(Any3DView)
+    captured = []
+    monkeypatch.setattr(
+        viewer,
+        "add_mesh_arrays",
+        lambda mesh, **options: captured.append((mesh, options)),
+    )
+    # The FEM plate grid passes one distinct thickness colour per face; that
+    # used to explode into one GPU batch per colour. Regression guard: many
+    # distinct front colours with a uniform back colour must stay a single
+    # per-face-colour batch.
+    colours = (
+        "#f87171", "#fb923c", "#fbbf24", "#a3e635", "#22d3ee", "#60a5fa",
+        "#818cf8", "#a78bfa", "#e879f9", "#f472b6",
+    )
+    polygons = tuple(
+        ((0, 0, i), (1, 0, i), (0, 1, i)) for i in range(len(colours))
+    )
+
+    viewer.add_faces(polygons, colors=colours, outline="black")
+
+    assert len(captured) == 1
+    mesh, options = captured[0]
+    assert mesh.triangle_count == len(colours)
+    assert len(mesh.lines) == len(colours) * 3
+    assert options["face_colors"] == tuple(colours)
+    assert options["color"] == colours[0]
+
+
+def test_gpu_legacy_face_conversion_splits_mixed_back_colours(monkeypatch):
     pytest.importorskip("moderngl")
     from any3dview.gpu import Any3DView
 
@@ -104,14 +137,19 @@ def test_gpu_legacy_face_conversion_batches_equal_colours(monkeypatch):
     polygons = (
         ((0, 0, 0), (1, 0, 0), (0, 1, 0)),
         ((0, 0, 1), (1, 0, 1), (0, 1, 1)),
-        ((0, 0, 2), (1, 0, 2), (0, 1, 2)),
     )
 
-    viewer.add_faces(polygons, colors=("red", "blue", "red"), outline="black")
+    # Distinct back colours keep the legacy one-batch-per-colour group so the
+    # single batch colour is not forced onto an unrelated face.
+    viewer.add_faces(
+        polygons,
+        colors=("red", "blue"),
+        back_colors=("black", "white"),
+        outline="black",
+    )
 
     assert len(captured) == 2
-    assert sum(mesh.triangle_count for mesh, _options in captured) == 3
-    assert sum(len(mesh.lines) for mesh, _options in captured) == 9
+    assert {mesh.triangle_count for mesh, _options in captured} == {1}
 
 
 def test_gpu_ring_stiffener_matches_web_and_flange_section_geometry(monkeypatch):

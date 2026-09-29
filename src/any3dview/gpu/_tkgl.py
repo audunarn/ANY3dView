@@ -17,6 +17,25 @@ from typing import Any, Optional
 _ASSET_ROOT = Path(__file__).with_name("tkgl")
 
 
+def _ensure_native_parent(parent: tk.Misc) -> None:
+    """Map an otherwise-unmapped Windows parent before creating a TkGL child.
+
+    The native TkGL widget needs a real parent HWND.  Calling ``update()`` for
+    every child creation, however, enters a nested Tk event loop.  That is
+    particularly unsafe while an application is replacing an already-mapped
+    viewer in response to a combobox event: it can dispatch the rest of that
+    transaction before the new surface has been installed.  A live parent
+    already has an HWND, so leave its event loop alone.  Only use the legacy
+    mapping fallback for a genuinely unmapped parent.
+    """
+
+    if sys.platform != "win32" or bool(parent.winfo_ismapped()):
+        return
+    parent.update_idletasks()
+    if not bool(parent.winfo_ismapped()):
+        parent.update()
+
+
 def _platform_package_directory() -> Path:
     if sys.platform == "win32":
         platform_name = "win32"
@@ -47,8 +66,7 @@ class GLCanvas(tk.Widget):
         **options: Any,
     ) -> None:
         # TkGL needs a native parent window before it creates its child surface.
-        if sys.platform == "win32":
-            parent.update()
+        _ensure_native_parent(parent)
 
         package_directory = _platform_package_directory()
         parent.tk.call("lappend", "auto_path", str(package_directory))
@@ -58,6 +76,11 @@ class GLCanvas(tk.Widget):
         if self.profile:
             widget_options["profile"] = self.profile
         tk.Widget.__init__(self, parent, "tkgl", cnf or {}, widget_options)
+        if sys.platform == "linux":
+            # Realize the X drawable before ModernGL detects the current context.
+            # winfo_id creates native ancestors without mapping the viewer or
+            # entering a nested event loop during construction.
+            self.winfo_id()
         self.bind("<Expose>", self._queue_draw, add="+")
         self.bind("<Map>", self._queue_draw, add="+")
         self.update_idletasks()
@@ -79,4 +102,3 @@ class GLCanvas(tk.Widget):
 
     def draw(self) -> None:
         """Render callback overridden by the owning viewer surface."""
-

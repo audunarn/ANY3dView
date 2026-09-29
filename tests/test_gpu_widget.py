@@ -225,6 +225,12 @@ def test_gpu_legacy_scene_state_capture_and_animation_parity():
     image = viewer.capture_image()
     assert image.size == viewer.viewport_size
     assert image.mode == "RGBA"
+    for geometry in ("520x360+0+0", "320x240+0+0"):
+        root.geometry(geometry)
+        root.update()
+        resized = viewer.capture_image()
+        assert resized.size == viewer.viewport_size
+        assert len(resized.tobytes()) == resized.width * resized.height * 4
 
     viewer.begin_animation_cache()
     viewer.capture_animation_frame()

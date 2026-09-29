@@ -6,7 +6,31 @@
 - **Applies to:** every contributor and every ANY repository.
 - **Canonical source:** `ANYopenSoft/ECOSYSTEM_GUIDE.md`.
 - **Local rule:** repository documentation may add constraints, but may not
-  weaken this guide. Integrated root copies must remain byte-identical.
+  weaken applicable technical or release requirements. Keep the policy reference
+  current; preserve explicitly adopted repository-specific requirements.
+
+## Risk-proportionate development — effective 2026-09-24
+
+Apply policy `ANY_ECOSYSTEM_RISK_PROPORTIONATE_ENGINEERING_V1`, revision
+`2026-09-24.2`, in the canonical [ANY ecosystem philosophy](https://github.com/audunarn/ANYopenSoft/blob/main/governance/ECOSYSTEM_PHILOSOPHY.md).
+For this workspace the effective adopted file is
+`C:/Github/ANYopenSoft/governance/ECOSYSTEM_PHILOSOPHY.md`; use it until this
+revision is published. Do not assume the remote page already contains local edits.
+
+Assess consequence, uncertainty, exposure and intended claim. Keep one short
+living task record. Level A permits authorized integrated development experiments
+with focused checks and early scrutiny of high-risk assumptions. Level B requires
+prospective criteria, exact identity, retained evidence and independent acceptance.
+Level C retains applicable release/installed-artifact requirements. A low-risk patch
+does not need an artificial scientific acceptance study. Reuse valid evidence by
+impact analysis; do not require a separate dossier or fixed reviewer count per helper.
+
+This replaces blanket future administrative ceremony, not scientific tolerances,
+frozen registrations, consumed run authority, explicit no-run instructions,
+protected evidence or release requirements. Active task owners record a short
+prospective transition in their existing note, retain substantive gates, and obtain
+any contract-required amendment before changing procedure. Resource scheduling
+follows the effective workspace policy, including `C:/Github/AGENTS.md` locally.
 
 ## Non-negotiables
 
@@ -71,6 +95,8 @@ units and provenance are required at repository boundaries.
 ## 3. Testing gates
 
 > **Merge rule:** all applicable gates must pass from a clean checkout.
+> Select development checks by risk and impact; full release requirements remain
+> release gates, not prerequisites for every Level-A experiment.
 
 - Every behavior change has focused unit tests; every defect fix has a regression
   that fails without the fix.
@@ -84,7 +110,8 @@ units and provenance are required at repository boundaries.
   follow theory or quantified numerical error, never observed output alone.
 - Failure, cancellation, timeout, stale-data and fallback paths are tested.
   Fallback is permitted only when explicit, safe and reported.
-- Distributions are built and checked; an installed wheel is imported and
+- For supported delivery/release and changes affecting installed behavior,
+  distributions are built and checked; an installed wheel is imported and
   smoke-tested outside the source tree. GUI/executable changes also receive a
   packaged-artifact smoke test on each claimed platform.
 - Supported Python and operating-system claims are exercised in CI. A platform or
@@ -134,3 +161,13 @@ Versions use `MAJOR.MINOR.PATCH`.
 
 A version bump does not prove qualification. Release requires the testing and
 traceability gates above, reviewed artifacts, and explicit publication authority.
+
+Decision-oriented investigation: before a substantial diagnostic batch, use the
+existing living record to identify the question, competing explanations, bounded
+experiment and how outcomes change the next action. Tie refinements, sweeps and
+new reference tools to the principal uncertainty; interpret the combined evidence
+and choose the next action rather than automatically repeating at greater cost.
+This adds no registration, approval or reporting gate. Scientific acceptance
+criteria and authority/resource limits remain unchanged; a spent diagnostic budget
+does not prove formulation failure. See the canonical philosophy's
+"Decision-oriented investigation" section.

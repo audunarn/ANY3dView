@@ -16,9 +16,43 @@ renderer contract.
 
 ```bash
 pip install ANY3dView
-pip install "ANY3dView[gpu]"       # ModernGL + tkinter-gl + Pillow capture
+pip install "ANY3dView[gpu]"       # ModernGL + bundled TkGL + Pillow capture
 pip install "ANY3dView[geometry]"  # ANYgeometry adapter (Python 3.11+)
 ```
+
+Geometry display requires the complete geometry extra, including mapbox-earcut.
+Missing triangulation support raises an actionable `UnsupportedDisplayGeometry`;
+there is no triangle-fan fallback for concave faces. The supported earcut range
+includes 2.x, which provides Python 3.14 wheels, as well as NumPy-2-compatible 1.x.
+
+`TessellationPolicy` controls sampled chord deviation and angular variation.
+The distance limit is `max(chord_tolerance, relative_chord_tolerance * extent)`;
+both distance and angle limits are multiplied by `2 ** (lod_levels - 1 - lod)`.
+The finest LOD uses the specified limits. Curved edges are subdivided adaptively;
+curved surfaces receive conforming interior refinement using public kernel
+evaluation and normals. Kernel trim loops, including holes, are retained in UV.
+Boundary preservation is always enabled (also when `preserve_boundaries=False`);
+that compatibility option does not permit topology simplification.
+`max_curve_segments` and `max_surface_triangles` bound work: exhausting either
+raises an error rather than accepting an out-of-policy approximation. These are
+sampled display error checks, not certified geometric or engineering bounds.
+
+Failed geometry updates retain the previous display and revision, record a
+diagnostic, and raise to the caller. After resolving the cause, call
+`process_pending()` to retry; applications should indicate that the display is
+stale until its revision catches up. A failed initial attachment closes the layer.
+
+Portable `ViewerState` now includes a copied light and immutable selection
+configuration. The new optional fields default to `None`, preserving the
+receiver's settings for callers constructing the older state shape.
+
+The `Viewer compatibility` workflow tests Python 3.10–3.14 core contracts on
+Windows, Linux and macOS, geometry extras on Python 3.11/3.14, installed wheel
+pairs, Linux desktop rendering, and ANYfem/ANYstructure consumer contracts.
+Geometry's Python 3.11 minimum does not change the core's Python 3.10 support.
+The workflow checks sibling repositories at their default branch. Manual runs
+accept a `peer_ref` branch or commit for testing coordinated viewer changes
+before merging them. Consumer repositories must contain their matching changes.
 
 ## Interactive demo
 

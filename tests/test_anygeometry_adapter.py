@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 
 anygeometry = pytest.importorskip("anygeometry")
+pytest.importorskip("mapbox_earcut", reason="positive adapter tests require the geometry extra")
 
 from any3dview import MeshHandle
 from any3dview.adapters.anygeometry import DisplayMode, DisplayPolicy, GeometryLayer
@@ -114,6 +115,30 @@ def test_change_set_replaces_only_affected_chunk() -> None:
     assert len(changed) == 1
     assert len(unchanged) == 1
     assert before[changed[0]].removed
+    layer.close()
+
+
+def test_missing_dependency_during_update_preserves_display_and_revision(monkeypatch):
+    import sys
+    from any3dview.adapters.anygeometry.tessellation import UnsupportedDisplayGeometry
+    model = anygeometry.GeometryModel()
+    _face, vertices = _plate(model, 0., 1.)
+    viewer = _QueuedViewer()
+    layer = GeometryLayer(model, DisplayPolicy(mode=DisplayMode.STRUCTURAL)).attach(viewer)
+    original = layer.handles
+    revision = layer.revision
+    model.move_point(vertices[0], -.1, 0., 0.)
+    with monkeypatch.context() as missing:
+        missing.setitem(sys.modules, "mapbox_earcut", None)
+        with pytest.raises(UnsupportedDisplayGeometry, match=r"ANY3dView\[geometry\]"):
+            viewer.flush_idle()
+    assert layer.handles == original
+    assert not original[0][1].removed
+    assert layer.revision == revision
+    assert "mapbox-earcut" in layer.diagnostics[-1]
+    layer.process_pending()
+    assert layer.revision == model.revision
+    assert original[0][1].removed
     layer.close()
 
 

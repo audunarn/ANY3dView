@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 import sys
 import time
 import tkinter as tk
@@ -259,6 +260,8 @@ class Any3DView(ttk.Frame):
             interaction_profile=self._interaction_profile,
             semantic_selection=self._semantic_selection,
             visibility=self._visibility_state,
+            light=deepcopy(self._light),
+            selection_config=self._selection_config,
         )
 
     def apply_view_state(self, state: ViewerState, *, redraw: bool = True) -> None:
@@ -288,6 +291,10 @@ class Any3DView(ttk.Frame):
         self._show_axis_indicator = bool(state.axis_indicator)
         self.show_axis_ruler = bool(state.axis_ruler)
         self.set_interaction_profile(profile)
+        if state.light is not None:
+            self._light = deepcopy(state.light)
+        if state.selection_config is not None:
+            self._selection_config = state.selection_config
         self._semantic_selection = semantic_refs(state.semantic_selection)
         self._visibility_state = state.visibility
         self._renderer.pick_dirty = True
@@ -1999,19 +2006,24 @@ class Any3DView(ttk.Frame):
         two_sided_shell: bool,
         bindings: Optional[Sequence[Optional[PickBinding]]],
         back_color: str = "",
+        face_colors: Optional[Sequence[str]] = None,
     ) -> None:
         points = np.asarray([as_point(value).to_tuple() for value in vertices], np.float64)
         face_values = [tuple(int(index) for index in face) for face in faces]
         triangles: list[tuple[int, int, int]] = []
         triangle_bindings: list[Optional[PickBinding]] = []
+        triangle_colors: list[str] = []
         edges: set[tuple[int, int]] = set()
         for face_index, face in enumerate(face_values):
             if len(face) < 3:
                 continue
             binding = None if bindings is None else bindings[face_index]
+            face_color = None if face_colors is None else face_colors[face_index]
             for index in range(1, len(face) - 1):
                 triangles.append((face[0], face[index], face[index + 1]))
                 triangle_bindings.append(binding)
+                if face_color is not None:
+                    triangle_colors.append(str(face_color))
             if outline:
                 edges.update(
                     tuple(sorted((face[index - 1], face[index])))
@@ -2050,6 +2062,7 @@ class Any3DView(ttk.Frame):
             line_color=outline or color,
             line_width=width,
             back_color=back_color,
+            face_colors=None if not triangle_colors else tuple(triangle_colors),
             _mesh_outline=bool(outline),
         )
 
@@ -2151,6 +2164,28 @@ class Any3DView(ttk.Frame):
             if len(raw_bindings) != total:
                 raise ValueError(f"bindings has {len(raw_bindings)} entries for {total} faces")
             binding_values = [self._coerce_binding(value, tags) for value in raw_bindings]
+        # When every face shares one back colour but the front colours vary,
+        # build a single batch with per-face colours instead of one batch per
+        # distinct colour. On the FEM plate grid the front colours number in
+        # the hundreds, so this collapses N GPU batches (each a full set of GL
+        # buffers/VAO/textures rebuilt every animation frame) into one.
+        if len(set(back_values)) == 1 and len(set(color_values)) > 1:
+            vertices: list[object] = []
+            faces: list[tuple[int, ...]] = []
+            for index in range(total):
+                offset = len(vertices)
+                polygon = polygon_values[index]
+                vertices.extend(polygon)
+                faces.append(tuple(range(offset, offset + len(polygon))))
+            if faces:
+                self._legacy_mesh_batch(
+                    vertices, faces, color=color_values[0], outline=outline, width=width,
+                    layer=layer, cull_backface=cull_backface, opacity=opacity,
+                    stipple=stipple, tags=tags, lit=lit,
+                    two_sided_shell=two_sided_shell, bindings=binding_values,
+                    back_color=back_values[0], face_colors=color_values,
+                )
+            return
         groups: dict[tuple[str, str], list[int]] = {}
         for index, key in enumerate(zip(color_values, back_values)):
             groups.setdefault(key, []).append(index)
@@ -3249,7 +3284,10 @@ class Any3DView(ttk.Frame):
             preselection_color="#ffd166",
         )
         self._render_hud((width, height))
-        payload = self._renderer.ctx.screen.read(components=4, alignment=1)
+        # The default framebuffer may retain its size from context creation.
+        payload = self._renderer.ctx.screen.read(
+            viewport=(0, 0, width, height), components=4, alignment=1
+        )
         image = Image.frombytes("RGBA", (width, height), payload).transpose(
             Image.Transpose.FLIP_TOP_BOTTOM
         )

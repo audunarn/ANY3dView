@@ -97,12 +97,19 @@ class PackedOwnerTable:
         owner_rows: list[tuple[int, int, int, int, int, int]] = []
         row_lookup: dict[tuple[object, ...], int] = {}
 
+        # Unique application keys grow with the model (one per element), so a
+        # list scan per lookup would make packing quadratic.  Each table keeps
+        # a parallel dict giving the same first-seen slot numbering.
+        slot_index: dict[int, dict[object, int]] = {}
+
         def slot(items: list[object], value: object) -> int:
-            try:
-                return items.index(value)
-            except ValueError:
-                items.append(value)
-                return len(items) - 1
+            index = slot_index.setdefault(id(items), {})
+            existing = index.get(value)
+            if existing is not None:
+                return existing
+            items.append(value)
+            index[value] = len(items) - 1
+            return len(items) - 1
 
         def normalized(value: Iterable[Owner] | PickBinding | None) -> tuple[Owner, ...]:
             if value is None:
@@ -135,7 +142,25 @@ class PackedOwnerTable:
             return len(owner_rows) - 1
 
         def encoded(values: Sequence[Iterable[Owner] | PickBinding | None]) -> list[list[int]]:
-            return [[encode(owner) for owner in normalized(value)] for value in values]
+            # A surface batch commonly repeats one owner tuple for every
+            # primitive.  Encode each distinct tuple object once and share the
+            # resulting row; ``_csr`` only reads rows.  ``values`` keeps every
+            # tuple alive for the call, so ``id`` is a safe key.
+            shared: dict[int, list[int]] = {}
+            rows: list[list[int]] = []
+            for value in values:
+                owners = normalized(value)
+                if not isinstance(value, (PickBinding, tuple)):
+                    # ``normalized`` built a temporary tuple whose id may be
+                    # reused, so it must not enter the identity memo.
+                    rows.append([encode(owner) for owner in owners])
+                    continue
+                key = id(owners)
+                row = shared.get(key)
+                if row is None:
+                    row = shared[key] = [encode(owner) for owner in owners]
+                rows.append(row)
+            return rows
 
         triangle_rows = encoded(triangles)
         line_rows = encoded(lines)

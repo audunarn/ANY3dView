@@ -81,6 +81,10 @@ GPU_CAPABILITIES = ViewerCapabilities(
 
 
 _CPU_POINT_STACK_LIMIT = 50_000
+# The screen-space outline needs a pure-Python projection of every primitive
+# (about 25 microseconds each, rebuilt after each camera change).  Keep that
+# inside one frame budget; larger scenes are highlighted by the GPU masks.
+_CPU_OUTLINE_LIMIT = 2_500
 
 
 class RetainedViewer:
@@ -733,7 +737,12 @@ class RetainedViewer:
     def _hover_select(self, event: object) -> None:
         if self._selection_dragging or self._drag:
             return
-        hits = self.query_point(int(event.x), int(event.y))
+        # Hover needs only the front primitive.  Without a legacy tag prefix
+        # the cached GPU ID target answers it at any scene size, so the CPU
+        # depth-stack index is not rebuilt after every camera change.
+        hits = self.query_point(
+            int(event.x), int(event.y), front_only=not self._pick_prefix
+        )
         hit = hits[0] if hits else None
         key = None if hit is None else hit.key
         if key == self._hover_key:
@@ -1670,7 +1679,15 @@ class RetainedViewer:
         selection_filter: Optional[SelectionFilter] = None,
         radius: Optional[int] = None,
         config: Optional[SelectionConfig] = None,
+        front_only: bool = False,
     ) -> tuple[SelectionHit, ...]:
+        """Return the hits under a pixel, front first.
+
+        ``front_only`` asks for the visible front hit alone (hover).  It lets
+        the GPU answer stand at every scene size; the default also reports the
+        stack behind it for small scenes, as click cycling requires.
+        """
+
         policy = config or self._selection_config
         active_filter = selection_filter or policy.filter
         effective_radius = (
@@ -1679,9 +1696,9 @@ class RetainedViewer:
         gpu_hits = self._gpu_point_hits(
             int(x), int(y), active_filter, effective_radius
         )
-        if (
-            policy.depth is SelectionDepth.VISIBLE
-            and self._display_primitive_count(_CPU_POINT_STACK_LIMIT)
+        if policy.depth is SelectionDepth.VISIBLE and (
+            front_only
+            or self._display_primitive_count(_CPU_POINT_STACK_LIMIT)
             > _CPU_POINT_STACK_LIMIT
         ):
             if gpu_hits is not None:
@@ -3221,8 +3238,8 @@ class RetainedViewer:
             # pan/orbit gesture ends.
             and not getattr(self, "_drag", "")
             and getattr(self, "_wheel_finish_after_id", None) is None
-            and self._display_primitive_count(_CPU_POINT_STACK_LIMIT)
-            <= _CPU_POINT_STACK_LIMIT
+            and self._display_primitive_count(_CPU_OUTLINE_LIMIT)
+            <= _CPU_OUTLINE_LIMIT
         ):
             item_tags = {
                 int(entry.get("item", -1)): set(entry.get("tags", ()))

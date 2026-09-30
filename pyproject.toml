@@ -38,6 +38,7 @@ dependencies = ["numpy"]
 [project.optional-dependencies]
 dev = ["pytest", "build", "twine", "setuptools>=77", "wheel", "tomli; python_version < '3.11'"]
 gpu = ["moderngl>=5.12,<6", "Pillow>=10,<13"]
+qt = ["PySide6>=6.10.1,<6.11", "Pillow>=10,<13"]
 geometry = ["ANYgeometry>=0.4.0,<0.5", "mapbox-earcut>=1.0.2,<3"]
 
 [project.urls]

@@ -66,7 +66,7 @@ def test_gpu_legacy_public_surface_contains_tk_compatibility_methods():
         "capture_image", "export_view_state", "apply_view_state",
         "project_point", "project_points", "unproject_to_plane",
     }
-    assert required <= set(vars(Any3DView))
+    assert required <= set(dir(Any3DView))
     signature = inspect.signature(Any3DView.add_mesh_arrays)
     assert signature.parameters["point_color"].default == "#2563eb"
     assert signature.parameters["point_size"].default == 6

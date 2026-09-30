@@ -411,7 +411,10 @@ class GPUHudRenderer:
         self.context.viewport = (0, 0, *self.viewport)
         self.context.disable(moderngl.CULL_FACE)
         self.context.enable(moderngl.BLEND)
-        self.context.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+        self.context.blend_func = (
+            moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA,
+            moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA,
+        )
         self.context.depth_mask = False
         self.atlas.bind(0)
         self.program["u_atlas"].value = 0

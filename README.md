@@ -12,6 +12,23 @@ same Tk application without adding a second event loop. Other desktop
 toolkits can provide a `ViewerHostAdapter` without changing scene data or the
 renderer contract.
 
+The conversion candidate also provides `any3dview.qt.QtViewerHostAdapter`.
+Install the candidate's `qt` extra for its QPainter software host, or `qt,gpu`
+for QOpenGLWidget rendering. Pass the host explicitly:
+
+```python
+from any3dview import create_viewer
+from any3dview.qt import QtViewerHostAdapter
+
+viewer = create_viewer(parent_widget, "auto", host=QtViewerHostAdapter())
+```
+
+The application owns QApplication and its event loop. Qt owns buffer presentation;
+the host renders into the widget framebuffer and releases resources with its
+context. Automatic fallback retains the scene and reports GPU diagnostics.
+The Qt host loads neither Tk nor ANYtk3D. These additions are source candidates,
+not a claim that an existing published wheel contains the Qt host.
+
 ## Installation
 
 ```bash

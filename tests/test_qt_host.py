@@ -45,6 +45,32 @@ def test_disabled_gpu_auto_fallback_and_explicit_failure(qapp,monkeypatch):
     assert viewer.backend_diagnostics
     viewer.destroy();qapp.processEvents()
 
+
+@pytest.mark.parametrize("backend",["software","gpu"])
+@pytest.mark.parametrize("fps,interval",[(0.5,2000),(2,500),(8,125)])
+def test_animation_fractional_rate_schedules_actual_qt_timer(qapp,backend,fps,interval):
+    if backend=="gpu" and os.environ.get("ANY3DVIEW_RUN_QT_GPU_TESTS")!="1":
+        pytest.skip("real GPU acceptance is explicitly opt-in")
+    viewer=create_viewer(None,backend,host=QtViewerHostAdapter())
+    try:
+        viewer.add_mesh_arrays(triangle(),tags="triangle",cull_backface=False)
+        viewer.show();qapp.processEvents()
+        viewer.begin_animation_cache();viewer.capture_animation_frame()
+        viewer.play_animation(fps=fps)
+        timer=viewer._animation_after_id
+        assert timer.isActive() and timer.interval()==interval
+        assert viewer.animation_frames==1
+        for invalid in (0,-1,float("nan"),float("inf"),float("-inf")):
+            with pytest.raises(ValueError,match="positive and finite"):
+                viewer.play_animation(fps=invalid)
+            assert viewer._animation_after_id is timer and timer.isActive()
+        for invalid in (1e-310,1e-8):
+            with pytest.raises(ValueError,match="timer interval range"):
+                viewer.play_animation(fps=invalid)
+            assert viewer._animation_after_id is timer and timer.isActive()
+        viewer.stop_animation();assert not timer.isActive()
+    finally:viewer.destroy();qapp.processEvents()
+
 @pytest.mark.skipif(os.environ.get("ANY3DVIEW_RUN_QT_GPU_TESTS")!="1",reason="real GPU acceptance is explicitly opt-in")
 def test_real_qt_gpu(qapp):
     viewer=create_viewer(None,"gpu",host=QtViewerHostAdapter())

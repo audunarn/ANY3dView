@@ -3050,7 +3050,14 @@ class RetainedViewer:
         self._apply_highlight_masks()
 
 
-    def play_animation(self, fps: int = 30, fast: Optional[bool] = None) -> None:
+    def play_animation(self, fps: float = 30, fast: Optional[bool] = None) -> None:
+        fps = float(fps)
+        if not math.isfinite(fps) or fps <= 0:
+            raise ValueError("animation fps must be positive and finite")
+        interval = 1000 / fps
+        if not math.isfinite(interval) or interval > 2_147_483_647:
+            raise ValueError("animation fps exceeds the host timer interval range")
+        delay = max(1, int(round(interval)))
         del fast  # API-compatible; GPU renders the full retained frame.
         if not self._animation_cache:
             return
@@ -3068,7 +3075,6 @@ class RetainedViewer:
             "highlight_outline": self._highlight_outline,
         }
         self._is_playing_animation = True
-        delay = max(1, int(1000 / max(1, int(fps))))
 
         def tick() -> None:
             if not self._is_playing_animation:

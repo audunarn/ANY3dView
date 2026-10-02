@@ -61,7 +61,35 @@ The focused independent follow-up confirmed the memo correction. Its suspected
 Windows wheel-glob blocker is not present: the wheel-install block already uses
 `shell: bash`. Twine also explicitly uses Bash for consistent glob expansion.
 The approved-action pin check and licensing check pass after the CI correction.
-Automatic CI and ANYfem verification remain pending.
+## Integrated evidence and delivery
+
+The runtime candidate is `c69aa8311e61b16f54895802fe8935cc2fe980ad`.
+All 32 jobs in [viewer compatibility CI](https://github.com/audunarn/ANY3dView/actions/runs/36987880953)
+passed. The Linux desktop suite passed 205 tests (one Qt opt-in module skipped),
+the two Linux installed Qt jobs passed all 15 tests each, and Windows software
+jobs passed 6 each with 9 intentionally GPU-only cases skipped. Those same 15
+Qt tests also passed locally against an installed wheel on native Windows GPU;
+the import origin was the disposable environment's `site-packages`.
+
+ANYfem `e2748d423a5b57606aab54877579ac6084a99f71` pins this exact viewer in its
+GUI extra, license inventory, README and both CI workflows. All four jobs in
+[ANYfem Qt CI](https://github.com/audunarn/ANYfem/actions/runs/36988077070) passed.
+Each of the six application profile runs (Windows/Linux software, Linux GPU,
+Python 3.11/3.14) passed 170 tests with zero failures, errors or skips. Every job
+also passed 22 launcher contracts and 42 feature/persistence contracts; both
+Linux jobs passed the 15 viewer GPU tests. Solver/material/geometry/mesh pins,
+scientific predicates and tolerances remain unchanged.
+
+The [viewer integration PR](https://github.com/audunarn/ANY3dView/pull/4) and
+[ANYfem alignment PR](https://github.com/audunarn/ANYfem/pull/11) carry final merge
+status and the full ANYfem regression result. Merge requires all existing checks
+to pass. A merge commit preserves the immutable viewer pin's reachability.
+This document's later evidence-only update does not change the tested runtime.
+
 The old PR's runtime changes are already on main; its missing workflow and
 historical implementation note are reconciled here. PR closure follows verified
 delivery, with links to the replacement and preserved September evidence.
+ANYtk3D #3 and ANYmesh #7 remain separate. Dirty geometry-adapter work and ANYfem
+startup/selection work in the original checkouts are preserved for their owners.
+This integration establishes the stated software compatibility, not a package
+release or broader physical-GPU/scientific qualification.

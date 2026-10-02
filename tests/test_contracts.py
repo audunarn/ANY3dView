@@ -900,3 +900,137 @@ def test_gpu_unowned_chunk_uses_stable_handle_tag_without_synthetic_owner(
     assert viewer._selection_binding(
         handle, entry, "triangle", 0, chunk_id="tagged"
     ) is None
+
+
+def _hud_viewer(monkeypatch, *, primitives, index=None):
+    from any3dview.gpu import Any3DView
+
+    class Hud:
+        def begin(self, _viewport):
+            pass
+
+        def render(self):
+            pass
+
+    viewer = Any3DView.__new__(Any3DView)
+    viewer._hud = Hud()
+    viewer._world_text = []
+    viewer._section_plane = None
+    viewer._show_axis_indicator = False
+    viewer.show_axis_ruler = False
+    viewer._thickness_legend = None
+    viewer._highlighted_tags = frozenset(("geometry.face:1",))
+    viewer._preselected_key = None
+    viewer._selection_dragging = False
+    viewer._selection_press = None
+    viewer._selection_current = None
+    viewer._drag = ""
+    viewer._wheel_finish_after_id = None
+    viewer._animation_frame_active = False
+    viewer._entries = {}
+    calls = []
+
+    def projected_index():
+        calls.append(True)
+        if index is None:
+            raise AssertionError("outline must not project primitives in Python")
+        return index
+
+    monkeypatch.setattr(viewer, "_display_primitive_count", lambda _limit: primitives)
+    monkeypatch.setattr(viewer, "_projected_selection_index", projected_index)
+    return viewer, calls
+
+
+def test_gpu_outline_limit_keeps_camera_work_inside_a_frame_budget(monkeypatch):
+    pytest.importorskip("moderngl")
+    from any3dview.retained_viewer import _CPU_OUTLINE_LIMIT, _CPU_POINT_STACK_LIMIT
+
+    # The outline limit must stay far below the depth-stack limit: a 25k
+    # primitive scene measured about 0.65 s per rebuild.
+    assert _CPU_OUTLINE_LIMIT <= _CPU_POINT_STACK_LIMIT // 10
+
+    viewer, calls = _hud_viewer(monkeypatch, primitives=_CPU_OUTLINE_LIMIT + 1)
+    viewer._render_hud((800, 600))
+    assert calls == []
+
+
+def test_gpu_outline_is_still_drawn_for_small_scenes(monkeypatch):
+    pytest.importorskip("moderngl")
+    from any3dview.retained_viewer import _CPU_OUTLINE_LIMIT
+
+    class Index:
+        primitives = ()
+
+    viewer, calls = _hud_viewer(
+        monkeypatch, primitives=_CPU_OUTLINE_LIMIT, index=Index()
+    )
+    viewer._render_hud((800, 600))
+    assert calls == [True]
+
+
+def test_gpu_front_only_query_uses_gpu_hit_for_small_scenes(monkeypatch):
+    pytest.importorskip("moderngl")
+    from any3dview import PickOwner, SelectionConfig, SelectionHit
+    from any3dview.gpu import Any3DView
+
+    expected = (SelectionHit(PickOwner("element:3"), primitive=3, depth=1.0),)
+    viewer = Any3DView.__new__(Any3DView)
+    viewer._selection_config = SelectionConfig()
+    monkeypatch.setattr(viewer, "_gpu_point_hits", lambda *_a, **_k: expected)
+    monkeypatch.setattr(viewer, "_display_primitive_count", lambda _limit: 10)
+    monkeypatch.setattr(
+        viewer,
+        "_projected_selection_index",
+        lambda: (_ for _ in ()).throw(AssertionError("CPU index must stay cold")),
+    )
+
+    assert viewer.query_point(4, 5, front_only=True) == expected
+
+
+def test_gpu_default_query_still_reports_the_stack_behind_small_scenes(monkeypatch):
+    pytest.importorskip("moderngl")
+    from any3dview import PickOwner, SelectionConfig, SelectionHit
+    from any3dview.gpu import Any3DView
+
+    front = SelectionHit(PickOwner("face:1"), primitive=0, depth=1.0)
+    behind = SelectionHit(PickOwner("face:2"), primitive=1, depth=2.0, visible=False)
+
+    class Index:
+        @staticmethod
+        def point_hits(*_args, **_kwargs):
+            return (front, behind)
+
+    viewer = Any3DView.__new__(Any3DView)
+    viewer._selection_config = SelectionConfig()
+    monkeypatch.setattr(viewer, "_gpu_point_hits", lambda *_a, **_k: (front,))
+    monkeypatch.setattr(viewer, "_display_primitive_count", lambda _limit: 10)
+    monkeypatch.setattr(viewer, "_projected_selection_index", lambda: Index())
+
+    assert viewer.query_point(4, 5) == (front, behind)
+
+
+@pytest.mark.parametrize("prefix, expected_front_only", [("", True), ("face:", False)])
+def test_gpu_hover_requests_front_hit_only_without_a_legacy_prefix(
+    monkeypatch, prefix, expected_front_only
+):
+    pytest.importorskip("moderngl")
+    from any3dview.gpu import Any3DView
+
+    viewer = Any3DView.__new__(Any3DView)
+    viewer._selection_dragging = False
+    viewer._drag = ""
+    viewer._pick_prefix = prefix
+    viewer._hover_key = None
+    viewer._selection_hover_callback = None
+    viewer._hover_callback = None
+    requests = []
+    monkeypatch.setattr(
+        viewer,
+        "query_point",
+        lambda *args, **kwargs: requests.append(kwargs) or (),
+    )
+    monkeypatch.setattr(viewer, "_set_hit_preselection", lambda _key: None)
+
+    viewer._hover_select(type("Event", (), {"x": 3, "y": 4})())
+
+    assert requests == [{"front_only": expected_front_only}]

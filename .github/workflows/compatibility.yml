@@ -1,0 +1,126 @@
+name: Viewer compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: viewer-tests-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pytest -q -m "not gui"
+      - run: python tools/check_licensing.py
+      - run: python -m build
+      - run: python -m twine check dist/*
+        shell: bash
+      - name: Import the built wheel outside the source checkout
+        shell: bash
+        run: |
+          python -m pip install --force-reinstall --no-deps dist/*.whl
+          cd "${{ runner.temp }}"
+          python -I -c "import sys, any3dview; from any3dview import ViewerBackend; assert not {'tkinter', 'PySide6', 'moderngl'} & set(sys.modules)"
+
+  geometry:
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.11", "3.14"]
+        geometry: ["ANYgeometry==0.4.0", "ANYgeometry>=0.4.3,<0.5"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[dev,geometry]" "${{ matrix.geometry }}"
+      - run: python -c "import anygeometry, mapbox_earcut"
+      - run: python -m pytest -q tests/test_anygeometry_adapter.py tests/test_tessellation_quality.py
+
+  tk-desktop:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    env:
+      ANY3DVIEW_RUN_GUI_TESTS: "1"
+      LIBGL_ALWAYS_SOFTWARE: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.13"
+      - run: sudo apt-get update && sudo apt-get install -y xvfb xauth libgl1-mesa-dri libgl-dev
+      - run: python -m pip install -e ".[dev,gpu,geometry]" "ANYtk3D>=0.5.5,<0.6"
+      - run: xvfb-run -a python -c "import moderngl; c=moderngl.create_standalone_context(require=330); c.release()"
+      - run: xvfb-run -a python -m pytest -q
+
+  qt:
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.11", "3.14"]
+    runs-on: ${{ matrix.os }}
+    env:
+      ANY3DVIEW_RUN_QT_TESTS: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install Linux Qt/XCB and Mesa runtime
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb xauth libegl1 libgl1-mesa-dri libgl-dev libx11-xcb1 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0 libxkbcommon-x11-0
+      - name: Install a wheel with the Qt extra
+        run: python -m pip install ".[dev,gpu,qt]"
+      - name: Require installed Qt imports without a source-tree fallback
+        run: python -I -c "import pathlib, any3dview, PySide6, moderngl; from any3dview.qt import QtViewerHostAdapter; assert 'site-packages' in pathlib.Path(any3dview.__file__).parts; print(PySide6.__version__, any3dview.__file__)"
+      - name: Windows software host contracts
+        if: runner.os == 'Windows'
+        env:
+          QT_QPA_PLATFORM: offscreen
+          ANY3DVIEW_DISABLE_GPU: "1"
+        run: python -m pytest tests/test_qt_host.py -q -o pythonpath= --junitxml=qt-results.xml
+      - name: Linux software and required GPU host contracts
+        if: runner.os == 'Linux'
+        env:
+          QT_QPA_PLATFORM: xcb
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          ANY3DVIEW_RUN_QT_GPU_TESTS: "1"
+        run: xvfb-run -a python -m pytest tests/test_qt_host.py -q -o pythonpath= --junitxml=qt-results.xml
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        if: always()
+        with:
+          name: qt-${{ matrix.os }}-${{ matrix.python }}
+          path: qt-results.xml
+          if-no-files-found: error

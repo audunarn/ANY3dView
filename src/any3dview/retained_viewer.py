@@ -1683,9 +1683,9 @@ class RetainedViewer:
     ) -> tuple[SelectionHit, ...]:
         """Return the hits under a pixel, front first.
 
-        ``front_only`` asks for the visible front hit alone (hover).  It lets
-        the GPU answer stand at every scene size; the default also reports the
-        stack behind it for small scenes, as click cycling requires.
+        ``front_only`` lets visible-depth hover use the GPU answer at every
+        scene size. Through-depth policy still returns the full stack, as does
+        the default small-scene query used for click cycling.
         """
 
         policy = config or self._selection_config

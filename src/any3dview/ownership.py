@@ -144,9 +144,10 @@ class PackedOwnerTable:
         def encoded(values: Sequence[Iterable[Owner] | PickBinding | None]) -> list[list[int]]:
             # A surface batch commonly repeats one owner tuple for every
             # primitive.  Encode each distinct tuple object once and share the
-            # resulting row; ``_csr`` only reads rows.  ``values`` keeps every
-            # tuple alive for the call, so ``id`` is a safe key.
-            shared: dict[int, list[int]] = {}
+            # resulting row; ``_csr`` only reads rows. Keep the normalized
+            # tuple alive in the memo: tuple subclasses and lazy sequences
+            # may produce temporary tuples whose ids would otherwise be reused.
+            shared: dict[int, tuple[tuple[Owner, ...], list[int]]] = {}
             rows: list[list[int]] = []
             for value in values:
                 owners = normalized(value)
@@ -156,10 +157,11 @@ class PackedOwnerTable:
                     rows.append([encode(owner) for owner in owners])
                     continue
                 key = id(owners)
-                row = shared.get(key)
-                if row is None:
-                    row = shared[key] = [encode(owner) for owner in owners]
-                rows.append(row)
+                cached = shared.get(key)
+                if cached is None:
+                    cached = (owners, [encode(owner) for owner in owners])
+                    shared[key] = cached
+                rows.append(cached[1])
             return rows
 
         triangle_rows = encoded(triangles)

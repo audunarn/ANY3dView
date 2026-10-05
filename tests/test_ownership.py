@@ -163,3 +163,15 @@ def test_temporary_owner_rows_never_alias_each_other_in_the_identity_memo():
     assert [table.owners_for("triangle", i)[0].key for i in range(50)] == [
         f"key:{i}" for i in range(50)
     ]
+
+
+def test_tuple_subclass_owner_rows_keep_distinct_identities():
+    from collections import namedtuple
+
+    Row = namedtuple("Row", "owner")
+    rows = [Row(PickOwner(f"key:{index}", "k")) for index in range(50)]
+    table = PackedOwnerTable.from_owners(triangles=rows)
+
+    assert [table.owners_for("triangle", i)[0].key for i in range(50)] == [
+        f"key:{i}" for i in range(50)
+    ]

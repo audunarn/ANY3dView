@@ -80,6 +80,44 @@ GPU_CAPABILITIES = ViewerCapabilities(
 )
 
 
+def _surface_outline_loops(mesh, triangles, groups=None):
+    """Recover boundaries from indexed topology, never coordinates or owner tags.
+
+    Only explicit polygon/element grouping removes an internal edge.  In its
+    absence every input triangle is a separate surface element.
+    """
+    mapping = groups if groups is not None else mesh.triangle_to_element
+    edges = {}
+    for triangle in triangles:
+        group = int(mapping[triangle]) if mapping is not None else int(triangle)
+        counts = edges.setdefault(group, {})
+        indices = mesh.triangles[triangle]
+        for a, b in zip(indices, np.roll(indices, -1)):
+            edge = tuple(sorted((int(a), int(b))))
+            counts[edge] = counts.get(edge, 0) + 1
+    for counts in edges.values():
+        boundary = {edge for edge, count in counts.items() if count != 2}
+        adjacency = {}
+        for a, b in boundary:
+            adjacency.setdefault(a, []).append(b)
+            adjacency.setdefault(b, []).append(a)
+        # A nonmanifold boundary has no unambiguous ring. Preserve its actual
+        # edges rather than invent a closing segment through the surface.
+        if any(len(neighbors) != 2 for neighbors in adjacency.values()):
+            yield from sorted(boundary)
+            continue
+        while boundary:
+            a, b = min(boundary)
+            boundary.remove((a, b))
+            ring = [a, b]
+            while ring[-1] != ring[0]:
+                current = ring[-1]
+                following = next(value for value in adjacency[current] if value != ring[-2])
+                boundary.remove(tuple(sorted((current, following))))
+                ring.append(following)
+            yield tuple(ring[:-1])
+
+
 _CPU_POINT_STACK_LIMIT = 50_000
 # The screen-space outline needs a pure-Python projection of every primitive
 # (about 25 microseconds each, rebuilt after each camera change).  Keep that
@@ -1683,9 +1721,9 @@ class RetainedViewer:
     ) -> tuple[SelectionHit, ...]:
         """Return the hits under a pixel, front first.
 
-        ``front_only`` asks for the visible front hit alone (hover).  It lets
-        the GPU answer stand at every scene size; the default also reports the
-        stack behind it for small scenes, as click cycling requires.
+        ``front_only`` lets visible-depth hover use the GPU answer at every
+        scene size. Through-depth policy still returns the full stack, as does
+        the default small-scene query used for click cycling.
         """
 
         policy = config or self._selection_config
@@ -1924,6 +1962,8 @@ class RetainedViewer:
             "semantic_points": {},
             "hit_points": {},
             "chunk_semantics": {},
+            "outline_groups": _appearance.get("_outline_groups"),
+            "outline_topology": mesh.triangles,
         }
         self._host.make_current()
         self._renderer.add_mesh(handle, **{
@@ -1995,6 +2035,7 @@ class RetainedViewer:
         triangles: list[tuple[int, int, int]] = []
         triangle_bindings: list[Optional[PickBinding]] = []
         triangle_colors: list[str] = []
+        outline_groups: list[int] = []
         edges: set[tuple[int, int]] = set()
         for face_index, face in enumerate(face_values):
             if len(face) < 3:
@@ -2003,6 +2044,7 @@ class RetainedViewer:
             face_color = None if face_colors is None else face_colors[face_index]
             for index in range(1, len(face) - 1):
                 triangles.append((face[0], face[index], face[index + 1]))
+                outline_groups.append(face_index)
                 triangle_bindings.append(binding)
                 if face_color is not None:
                     triangle_colors.append(str(face_color))
@@ -2046,6 +2088,7 @@ class RetainedViewer:
             back_color=back_color,
             face_colors=None if not triangle_colors else tuple(triangle_colors),
             _mesh_outline=bool(outline),
+            _outline_groups=np.asarray(outline_groups, dtype=np.uint32),
         )
 
 
@@ -2886,6 +2929,7 @@ class RetainedViewer:
                     for key, mesh, owners, resolver in handle.chunk_records
                 ),
                 "appearance": dict(entry.get("appearance", {})),
+                "outline_groups": None if entry.get("outline_groups") is None else np.asarray(entry["outline_groups"]).copy(),
                 "transform": np.asarray(handle.transform).copy(),
                 "deformation_scale": handle.deformation_scale,
                 "selected": np.asarray(handle.selected_elements).copy(),
@@ -3004,6 +3048,8 @@ class RetainedViewer:
                 "owners": item["owners"],
                 "owner_resolver": item["owner_resolver"],
                 "appearance": item["appearance"],
+                "outline_groups": item.get("outline_groups"),
+                "outline_topology": handle.mesh.triangles,
                 "layer": item["layer"],
                 "tags": item["tags"],
                 "item": item["item"],
@@ -3050,7 +3096,14 @@ class RetainedViewer:
         self._apply_highlight_masks()
 
 
-    def play_animation(self, fps: int = 30, fast: Optional[bool] = None) -> None:
+    def play_animation(self, fps: float = 30, fast: Optional[bool] = None) -> None:
+        fps = float(fps)
+        if not math.isfinite(fps) or fps <= 0:
+            raise ValueError("animation fps must be positive and finite")
+        interval = 1000 / fps
+        if not math.isfinite(interval) or interval > 2_147_483_647:
+            raise ValueError("animation fps exceeds the host timer interval range")
+        delay = max(1, int(round(interval)))
         del fast  # API-compatible; GPU renders the full retained frame.
         if not self._animation_cache:
             return
@@ -3068,7 +3121,6 @@ class RetainedViewer:
             "highlight_outline": self._highlight_outline,
         }
         self._is_playing_animation = True
-        delay = max(1, int(1000 / max(1, int(fps))))
 
         def tick() -> None:
             if not self._is_playing_animation:
@@ -3081,6 +3133,133 @@ class RetainedViewer:
 
         tick()
 
+
+    def _project_surface_outline(self, world, loop):
+        polygon = world[list(loop)]
+        if self._section_plane is not None and self._section_plane.enabled:
+            polygon = np.asarray([point.to_tuple() for point in self._section_plane.clip_polygon(polygon)]).reshape((-1, 3))
+        right, up, forward = self.camera.basis()
+        basis = np.asarray((right.to_tuple(), up.to_tuple(), forward.to_tuple()))
+        camera_polygon = (polygon - np.asarray(self.camera.position.to_tuple())) @ basis.T
+        camera_polygon = self._far_clip(self._near_clip(camera_polygon, self.camera.near), self.camera.far)
+        if len(camera_polygon) < 3:
+            return ()
+        width, height = self._host.framebuffer_size()
+        scale = 0.5 * height / math.tan(self.camera.fov * 0.5)
+        return tuple((0.5 * width + point[0] * scale / point[2], 0.5 * height - point[1] * scale / point[2]) for point in camera_polygon)
+
+    def _project_outline_segment(self, segment):
+        if self._section_plane is not None:
+            segment = self._section_plane.clip_segment(*segment)
+            if segment is None:
+                return ()
+            segment = np.asarray([point.to_tuple() for point in segment])
+        right, up, forward = self.camera.basis()
+        basis = np.asarray((right.to_tuple(), up.to_tuple(), forward.to_tuple()))
+        segment = (np.asarray(segment) - np.asarray(self.camera.position.to_tuple())) @ basis.T
+        for limit, keep_greater in ((self.camera.near, True), (self.camera.far, False)):
+            inside = segment[:, 2] >= limit if keep_greater else segment[:, 2] <= limit
+            if not inside.any():
+                return ()
+            if not inside.all():
+                amount = (limit - segment[0, 2]) / (segment[1, 2] - segment[0, 2])
+                segment[0 if not inside[0] else 1] = segment[0] + amount * (segment[1] - segment[0])
+        width, height = self._host.framebuffer_size()
+        scale = .5 * height / math.tan(self.camera.fov * .5)
+        return tuple((.5 * width + point[0] * scale / point[2], .5 * height - point[1] * scale / point[2], point[2]) for point in segment)
+
+    @staticmethod
+    def _outline_groups(entry, chunk_id, mesh):
+        groups = entry.get("outline_groups") if chunk_id is None else None
+        if groups is not None:
+            topology = entry.get("outline_topology")
+            if len(groups) != mesh.triangle_count or (topology is not mesh.triangles and not np.array_equal(topology, mesh.triangles)):
+                entry["outline_groups"] = None
+                return None
+        return groups
+
+    def _surface_outline_segments(self, entry, chunk_id, mesh, triangles, world):
+        groups = self._outline_groups(entry, chunk_id, mesh)
+        for loop in _surface_outline_loops(mesh, triangles, groups):
+            edges = [loop] if len(loop) == 2 else zip(loop, (*loop[1:], loop[0]))
+            for edge in edges:
+                points = self._project_outline_segment(world[list(edge)])
+                if points:
+                    yield points
+        # Clipping creates actual boundaries through filled triangles. Keep
+        # their collinear pieces rather than closing each hole's boundary ring
+        # across empty space. Their endpoints come from triangle/plane cuts;
+        # no positional welding or inferred surface ownership is involved.
+        def cut(polygon, distances):
+            if np.all(distances == 0):
+                return ()
+            intersections = []
+            for i, distance in enumerate(distances):
+                j = (i + 1) % len(polygon)
+                if distance == 0:
+                    intersections.append(polygon[i])
+                elif distance * distances[j] < 0:
+                    amount = distance / (distance - distances[j])
+                    intersections.append(polygon[i] + amount * (polygon[j] - polygon[i]))
+            return intersections if len(intersections) == 2 else ()
+        forward = np.asarray(self.camera.basis()[2].to_tuple())
+        origin = np.asarray(self.camera.position.to_tuple())
+        for triangle in triangles:
+            polygon = world[mesh.triangles[triangle]]
+            plane = self._section_plane
+            if plane is not None and plane.enabled:
+                section = cut(polygon, np.asarray([plane.signed_distance(point) for point in polygon]))
+                if len(section):
+                    points = self._project_outline_segment(section)
+                    if points:
+                        yield points
+                polygon = np.asarray([point.to_tuple() for point in plane.clip_polygon(polygon)]).reshape((-1, 3))
+            for limit in (self.camera.near, self.camera.far):
+                section = cut(polygon, (polygon - origin) @ forward - limit)
+                if len(section):
+                    points = self._project_outline_segment(section)
+                    if points:
+                        yield points
+
+    def _highlight_surface_outlines(self, hud, active):
+        for entry in self._display_entries().values():
+            handle = entry["handle"]
+            if handle.removed or not handle.visible or entry["appearance"].get("depth_only"):
+                continue
+            for chunk_id, mesh in [(None, handle.mesh), *handle.chunks]:
+                positions = mesh.positions
+                if mesh.displacements is not None:
+                    positions = positions + handle.deformation_scale * mesh.displacements
+                world = positions @ handle.transform[:3, :3].T + handle.transform[:3, 3]
+                selected, preselected = [], []
+                masks = getattr(self._renderer, "masks", {}) if chunk_id is None else getattr(self._renderer, "chunk_masks", {})
+                mask = masks.get(id(handle) if chunk_id is None else (id(handle), chunk_id), {})
+                hidden = set(mask.get("hidden_elements", ()))
+                for triangle in range(mesh.triangle_count):
+                    element = int(mesh.triangle_to_element[triangle]) if mesh.triangle_to_element is not None else triangle
+                    if element in hidden or (mesh.active_elements is not None and not mesh.active_elements[element]):
+                        continue
+                    binding = self._selection_binding(handle, entry, "triangle", triangle, chunk_id=chunk_id) if entry["appearance"].get("pickable", True) else None
+                    if not self._semantic_binding_visible(binding):
+                        continue
+                    keys = set(entry.get("tags", ()))
+                    if binding is not None:
+                        keys.update(owner.key for owner in binding.owners)
+                    matched = keys & active
+                    if not matched:
+                        continue
+                    points = self._project_surface_outline(world, mesh.triangles[triangle])
+                    if len(points) < 3:
+                        continue
+                    if entry["appearance"].get("cull_backface", True):
+                        area = sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(points, (*points[1:], points[0])))
+                        if area >= -1.e-9:
+                            continue
+                    target = preselected if self._preselected_key in matched and not matched & self._highlighted_tags else selected
+                    target.append(triangle)
+                for triangles, color in ((selected, self._highlight_outline), (preselected, "#b77900")):
+                    for points in self._surface_outline_segments(entry, chunk_id, mesh, triangles, world):
+                        hud.line(*(point[:2] for point in points), color, width=2.5)
 
     def _render_hud(self, viewport: tuple[int, int], *, target=None) -> None:
         """Render labels, legends, selection outlines and gestures in OpenGL."""
@@ -3245,7 +3424,13 @@ class RetainedViewer:
                 int(entry.get("item", -1)): set(entry.get("tags", ()))
                 for entry in self._display_entries().values()
             }
+            mesh_line_items = {
+                int(entry.get("item", -1))
+                for entry in self._display_entries().values()
+                if entry.get("appearance", {}).get("mesh_lines", False)
+            }
             index = self._projected_selection_index()
+            self._highlight_surface_outlines(hud, active)
             for primitive in index.primitives:
                 keys = set(item_tags.get(primitive.item, ()))
                 if primitive.binding is not None:
@@ -3258,8 +3443,10 @@ class RetainedViewer:
                 )
                 color = "#b77900" if preselected else self._highlight_outline
                 if primitive.shape == "polygon":
-                    hud.polyline(primitive.points, color, width=2.5, closed=True)
+                    continue
                 elif primitive.shape == "segment":
+                    if primitive.item in mesh_line_items:
+                        continue
                     hud.line(primitive.points[0], primitive.points[1], color, width=3.0)
                 else:
                     hud.circle(primitive.points[0], max(5.0, primitive.radius + 2), color, width=2.0)

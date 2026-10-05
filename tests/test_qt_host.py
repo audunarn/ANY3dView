@@ -46,6 +46,165 @@ def test_disabled_gpu_auto_fallback_and_explicit_failure(qapp,monkeypatch):
     viewer.destroy();qapp.processEvents()
 
 
+def _center_color(viewer, qapp, point=(.5, .5, 0)):
+    qapp.processEvents()
+    image = np.asarray(viewer.capture_image())
+    x, y, _ = viewer.project_point(point)
+    return image[int(y), int(x), :3].astype(int)
+
+
+def _center_edge_contrast(viewer, qapp):
+    qapp.processEvents()
+    image = np.asarray(viewer.capture_image()).astype(int)
+    x, y, _ = viewer.project_point((.5,.5,0))
+    x, y = round(x), round(y)
+    return np.max(np.abs(image[y-2:y+3,x-2:x+3,:3] - image[y,x+9,:3]))
+
+
+@pytest.mark.parametrize("state", ["plain", "highlight", "preselection"])
+def test_software_quad_has_boundary_without_fill_diagonal(qapp, state):
+    viewer = create_viewer(None, "software", host=QtViewerHostAdapter())
+    try:
+        viewer.resize(640, 480); viewer.show()
+        viewer.add_faces([[(0,0,0), (1,0,0), (1,1,0), (0,1,0)]],
+                         colors="#e08040", outline="#000000", width=3, tags="quad")
+        viewer.set_top_view(); viewer.fit_to_scene()
+        if state == "highlight": viewer.set_highlight(["quad"])
+        if state == "preselection": viewer.set_preselection("quad")
+        diagonal = _center_color(viewer, qapp)
+        interior = _center_color(viewer, qapp, (.55,.45,0))
+        assert np.max(np.abs(diagonal - interior)) < 20
+        if state == "highlight":
+            viewer.begin_animation_cache(); viewer.capture_animation_frame()
+            viewer._show_animation_frame(0)
+            assert np.max(np.abs(_center_color(viewer, qapp) - _center_color(viewer, qapp, (.55,.45,0)))) < 20
+        assert viewer.pick_at(*map(int, viewer.project_point((.5,.5,0))[:2])) == "quad"
+        viewer.set_section_plane((1,0,0), .25)
+        diagonal = _center_color(viewer, qapp)
+        interior = _center_color(viewer, qapp, (.55,.45,0))
+        assert np.max(np.abs(diagonal - interior)) < 20
+    finally:
+        viewer.destroy(); qapp.processEvents()
+
+
+def test_outline_topology_preserves_element_boundaries_and_holes():
+    from any3dview.retained_viewer import RetainedViewer, _surface_outline_loops
+    positions = np.zeros((8,3))
+    triangles = np.array([(0,1,5),(0,5,4),(1,2,6),(1,6,5),
+                          (2,3,7),(2,7,6),(3,0,4),(3,4,7)], dtype=np.uint32)
+    ring = MeshArrays(positions, triangles, triangle_to_element=np.zeros(8,dtype=np.uint32))
+    loops = list(_surface_outline_loops(ring, range(8)))
+    assert {frozenset(loop) for loop in loops} == {frozenset(range(4)), frozenset(range(4,8))}
+    # Separate actual triangles retain shared edges even with identical positions.
+    actual = MeshArrays(positions, triangles)
+    assert len(list(_surface_outline_loops(actual, range(8)))) == 8
+    entry = {"outline_groups": np.zeros(8,dtype=np.uint32), "outline_topology": triangles}
+    assert RetainedViewer._outline_groups(entry,None,actual) is entry["outline_groups"]
+    replacement = MeshArrays(positions,triangles[::-1])
+    assert RetainedViewer._outline_groups(entry,None,replacement) is None
+    assert entry["outline_groups"] is None
+
+
+def test_software_clipped_hole_chunk_transform_deformation_and_visibility(qapp):
+    viewer = create_viewer(None, "software", host=QtViewerHostAdapter())
+    positions = np.array([(0.,0.,0.),(3.,0.,0.),(3.,3.,0.),(0.,3.,0.),
+                          (1.,1.,0.),(2.,1.,0.),(2.,2.,0.),(1.,2.,0.)])
+    triangles = np.array([(0,1,5),(0,5,4),(1,2,6),(1,6,5),
+                          (2,3,7),(2,7,6),(3,0,4),(3,4,7)],dtype=np.uint32)
+    mesh = MeshArrays(positions, triangles, triangle_to_element=np.zeros(8,dtype=np.uint32),
+                      displacements=np.tile((.1,0,0),(8,1)))
+    try:
+        viewer.resize(640,480); viewer.show()
+        handle = viewer.add_mesh_arrays(MeshArrays(np.empty((0,3)),np.empty((0,3),dtype=np.uint32)),
+                                        color="#e08040", tags="ring", cull_backface=False)
+        handle.add_chunk("ring",mesh)
+        transform = np.eye(4); transform[0,3] = .2
+        handle.set_transform(transform); handle.set_deformation_scale(2)
+        viewer.set_top_view(); viewer.fit_to_scene()
+        viewer.set_highlight(["ring"])
+        outside = _center_color(viewer,qapp,(3.7,3.7,0))
+        hole = _center_color(viewer,qapp,(1.9,1.5,0))
+        assert np.max(np.abs(hole-outside)) < 20
+        viewer.set_section_plane((1,0,0),1.9)
+        # The section cut through the hole must remain empty, including its cut line.
+        assert np.max(np.abs(_center_color(viewer,qapp,(1.9,1.5,0))-outside)) < 20
+        # A cut through filled material remains an actual outlined boundary.
+        assert np.max(np.abs(_center_color(viewer,qapp,(1.9,.5,0))-outside)) > 30
+        assert viewer.pick_at(*map(int,viewer.project_point((2.9,1.5,0))[:2])) == "ring"
+        handle.set_visible(False)
+        assert np.max(np.abs(_center_color(viewer,qapp,(2.9,1.5,0))-outside)) < 20
+    finally:
+        viewer.destroy(); qapp.processEvents()
+
+
+def test_software_polygon_visibility_and_per_triangle_colors(qapp):
+    viewer = create_viewer(None,"software",host=QtViewerHostAdapter())
+    try:
+        viewer.resize(640,480); viewer.show()
+        positions = np.array([(0.,0.,0.),(1.,0.,0.),(1.,1.,0.),(0.,1.,0.)])
+        mesh = MeshArrays(positions,np.array([(0,1,2),(0,2,3)],dtype=np.uint32),
+                          triangle_to_element=np.array([0,0],dtype=np.uint32))
+        handle = viewer.add_mesh_arrays(mesh,face_colors=("#ff0000","#0000ff"),
+                                        line_color="#000000",tags="quad",cull_backface=False)
+        viewer.set_top_view(); viewer.fit_to_scene()
+        first = _center_color(viewer,qapp,(.75,.25,0))
+        second = _center_color(viewer,qapp,(.25,.75,0))
+        assert first[0] > 200 and first[2] < 50
+        assert second[2] > 200 and second[0] < 50
+        outside = _center_color(viewer,qapp,(1.2,1.2,0))
+        handle.set_active_elements(np.array([False]))
+        viewer.set_highlight(["quad"])
+        assert np.max(np.abs(_center_color(viewer,qapp)-outside)) < 20
+        handle.set_active_elements(np.array([True]))
+        viewer._renderer.masks[id(handle)] = {"hidden_elements": np.array([0])}
+        assert np.max(np.abs(_center_color(viewer,qapp)-outside)) < 20
+    finally:
+        viewer.destroy(); qapp.processEvents()
+
+
+def test_software_explicit_element_topology_and_mesh_toggle(qapp):
+    viewer = create_viewer(None, "software", host=QtViewerHostAdapter())
+    positions = np.array([(0.,0.,0.), (1.,0.,0.), (1.,1.,0.), (0.,1.,0.)])
+    triangles = np.array([(0,1,2), (0,2,3)], dtype=np.uint32)
+    try:
+        viewer.resize(640,480); viewer.show()
+        # These are two actual FE triangles, even though the scene tag is shared.
+        viewer.add_mesh_arrays(MeshArrays(positions, triangles), color="#e08040",
+                               line_color="#000000", line_width=3, tags="mesh", cull_backface=False)
+        viewer.set_top_view(); viewer.fit_to_scene()
+        assert _center_edge_contrast(viewer, qapp) > 30
+        viewer.set_mesh_lines(False)
+        assert np.max(_center_color(viewer, qapp)) > 100
+        viewer.set_highlight(["mesh"])
+        assert np.max(np.abs(_center_color(viewer, qapp) - _center_color(viewer, qapp, (.55,.45,0)))) > 30
+        viewer.clear(); viewer.set_mesh_lines(True)
+        viewer.add_mesh_arrays(MeshArrays(positions, triangles, triangle_to_element=np.array([0,0],dtype=np.uint32)),
+                               color="#e08040", line_color="#000000", line_width=3, tags="quad", cull_backface=False)
+        assert np.max(np.abs(_center_color(viewer, qapp) - _center_color(viewer, qapp, (.55,.45,0)))) < 20
+        viewer.set_highlight(["quad"])
+        assert np.max(np.abs(_center_color(viewer, qapp) - _center_color(viewer, qapp, (.55,.45,0)))) < 20
+    finally:
+        viewer.destroy(); qapp.processEvents()
+
+
+def test_software_nearer_fill_occludes_farther_raw_mesh_boundaries(qapp):
+    viewer = create_viewer(None,"software",host=QtViewerHostAdapter())
+    try:
+        viewer.resize(640,480); viewer.show()
+        back = np.array([(-1.,-1.,-.5),(2.,-1.,-.5),(.5,2.,-.5)])
+        front = np.array([(0.,0.,0.),(1.,0.,0.),(1.,1.,0.),(0.,1.,0.)])
+        viewer.add_mesh_arrays(MeshArrays(back,np.array([(0,1,2)],dtype=np.uint32)),
+                               color="#e08040",line_color="#000000",line_width=5,cull_backface=False)
+        viewer.add_mesh_arrays(MeshArrays(front,np.array([(0,1,2),(0,2,3)],dtype=np.uint32),
+                                          triangle_to_element=np.array([0,0],dtype=np.uint32)),
+                               color="#e08040",line_color="#000000",line_width=5,cull_backface=False)
+        viewer.set_top_view(); viewer.fit_to_scene()
+        # A rear triangle edge crosses the interior of the nearer quad.
+        assert np.max(np.abs(_center_color(viewer,qapp,(.1,.5,0)) - np.array([224,128,64]))) < 20
+    finally:
+        viewer.destroy(); qapp.processEvents()
+
+
 @pytest.mark.parametrize("backend", ["software", "gpu"])
 def test_qt_resize_capture_and_view_state_replacement(qapp, backend):
     if backend == "gpu" and os.environ.get("ANY3DVIEW_RUN_QT_GPU_TESTS") != "1":

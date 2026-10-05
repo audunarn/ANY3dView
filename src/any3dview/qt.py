@@ -422,7 +422,7 @@ class QtViewer(RetainedViewer, QWidget):
         ratio = self.surface.devicePixelRatioF()
         painter.scale(1/ratio, 1/ratio)
         painter.fillRect(0, 0, *self.viewport_size, QColor(self.bg))
-        faces, lines, points = [], [], []
+        faces, lines, points, outlines = [], [], [], []
         for entry in self._display_entries().values():
             handle = entry["handle"]
             if handle.removed or not handle.visible:
@@ -441,6 +441,7 @@ class QtViewer(RetainedViewer, QWidget):
                 highlighted = set(mask.get("selected_elements", ())) | set(handle.selected_elements)
                 preselected = set(mask.get("preselected_elements", ()))
                 colors = appearance.get("face_colors")
+                visible_triangles = []
                 for index, triangle in enumerate(mesh.triangles):
                     element = int(mesh.triangle_to_element[index]) if mesh.triangle_to_element is not None else index
                     if mesh.active_elements is not None and not mesh.active_elements[element]:
@@ -453,6 +454,7 @@ class QtViewer(RetainedViewer, QWidget):
                     screen = [self.project_point(Point3D(*p)) for p in verts]
                     if len(screen)<3 or any(p is None for p in screen):
                         continue
+                    visible_triangles.append(index)
                     color = self._highlight_fill if element in highlighted else (colors[index if len(colors)==mesh.triangle_count else element] if colors else appearance["color"])
                     scalars=mesh.element_scalars if mesh.element_scalars is not None else mesh.node_scalars
                     if scalars is not None and not colors and element not in highlighted:
@@ -462,7 +464,10 @@ class QtViewer(RetainedViewer, QWidget):
                         color=_interpolate_thickness_color(value,*limits) if np.isfinite(value) else appearance["invalid_color"]
                     if element in preselected and element not in highlighted:color="#ffd166"
                     faces.append((sum(p[2] for p in screen)/len(screen), screen, color, appearance))
-                if mesh.lines is not None:
+                if self.show_mesh_lines and (appearance.get("mesh_lines") or entry.get("outline_groups") is None):
+                    for screen in self._surface_outline_segments(entry, chunk_id, mesh, visible_triangles, world):
+                        outlines.append((sum(point[2] for point in screen) / len(screen), screen, appearance))
+                if mesh.lines is not None and not appearance.get("mesh_lines"):
                     hidden_lines=set(mask.get("hidden_lines",()))
                     selected_lines=set(mask.get("selected_lines",()))
                     for index,(a,b) in enumerate(mesh.lines):
@@ -484,11 +489,26 @@ class QtViewer(RetainedViewer, QWidget):
                         style=dict(appearance)
                         if index in selected_points:style["point_color"]=self._highlight_fill
                         points.append((projected[i],style))
-        for _, screen, color, appearance in sorted(faces, key=lambda f:f[0], reverse=True):
-            fill=QColor(color); fill.setAlphaF(appearance["opacity"])
-            painter.setBrush(fill)
-            painter.setPen(QPen(QColor(appearance["line_color"]), appearance["line_width"]) if self.show_mesh_lines else Qt.NoPen)
-            painter.drawPolygon(QPolygonF([QPointF(*p[:2]) for p in screen]))
+        surfaces = [(depth, 0, screen, color, appearance) for depth, screen, color, appearance in faces]
+        surfaces.extend((depth, 1, screen, None, appearance) for depth, screen, appearance in outlines)
+        # Keep the software painter's depth ordering: nearer fills must cover
+        # more distant boundaries. At equal depth, fill before its own outline.
+        for _, kind, screen, color, appearance in sorted(surfaces, key=lambda surface: (-float(f"{surface[0]:.12g}"), surface[1])):
+            polygon = QPolygonF([QPointF(*point[:2]) for point in screen])
+            if kind == 0:
+                # Antialiasing each tessellation triangle independently leaves
+                # pale seams where their partially covered edge pixels meet.
+                painter.setRenderHint(QPainter.Antialiasing, False)
+                fill=QColor(color); fill.setAlphaF(appearance["opacity"])
+                painter.setBrush(fill)
+                painter.setPen(Qt.NoPen)
+                painter.drawPolygon(polygon)
+            else:
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(QColor(appearance["line_color"]), appearance["line_width"]))
+                painter.drawPolyline(polygon)
+        painter.setRenderHint(QPainter.Antialiasing, True)
         for a,b,appearance in lines:
             painter.setPen(QPen(QColor(appearance["line_color"]),appearance["line_width"]))
             painter.drawLine(QPointF(*a[:2]),QPointF(*b[:2]))

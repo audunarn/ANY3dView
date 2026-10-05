@@ -93,3 +93,25 @@ ANYtk3D #3 and ANYmesh #7 remain separate. Dirty geometry-adapter work and ANYfe
 startup/selection work in the original checkouts are preserved for their owners.
 This integration establishes the stated software compatibility, not a package
 release or broader physical-GPU/scientific qualification.
+
+## False diagonal display correction — 2026-10-05
+
+ANYfem reported a selected quad showing its fill-triangulation diagonal. Scope is
+rendering only: preserve geometry/FE topology, scientific behavior, picking and
+per-triangle results. The fix is isolated from unrelated dirty adapter work on
+base `2fba4dc`. Software fills have no triangle pens or per-triangle antialias
+seams. Source polygon grouping, or explicit MeshArrays triangle-to-element
+grouping, removes internal indexed edges; ungrouped real triangles retain theirs.
+Selection/preselection HUD boundaries use the same indexed topology, with no
+coordinate or shared-tag topology inference. Retain holes, clipping, masks,
+chunks/deformation, approximate software painter depth ordering and animation.
+Private grouping is invalidated when its indexed topology changes.
+
+Focused viewer/retained/selection/array checks plus six ANYfem rendered regressions:
+45 pass, 9 explicitly GPU-opt-in skipped, 3.72 seconds. Failed seam and depth
+checks remain under `reports/qt/false-diagonal/`. ANYfem independently reproduces
+four old false-diagonal cases and checks real FE triangles as positive controls.
+OpenAI implementation and parent review are used after the earlier Mistral Edit
+Git-boundary violation; external Mistral READ review requires separate source
+permission, currently pending. This fix does not claim physical GPU acceptance
+or authorize package release.

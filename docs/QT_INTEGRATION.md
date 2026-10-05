@@ -112,6 +112,11 @@ Focused viewer/retained/selection/array checks plus six ANYfem rendered regressi
 checks remain under `reports/qt/false-diagonal/`. ANYfem independently reproduces
 four old false-diagonal cases and checks real FE triangles as positive controls.
 OpenAI implementation and parent review are used after the earlier Mistral Edit
-Git-boundary violation; external Mistral READ review requires separate source
-permission, currently pending. This fix does not claim physical GPU acceptance
-or authorize package release.
+Git-boundary violation. User-approved external Mistral READ review completed on
+2026-10-05; report and parent adjudication are retained in ANYfem's
+`reports/qt/false-diagonal/`. Disabled-plane clipping already bypasses clipping;
+owner/tag HUD selection admission and the stationary-camera/2,500-primitive guard
+are unchanged. No confirmed correctness regression was found. Software fills
+disable per-triangle antialiasing to remove seams; silhouettes may appear jagged
+with outlines off, while boundary strokes retain antialiasing. This documented
+visual limitation does not claim physical GPU acceptance or authorize release.

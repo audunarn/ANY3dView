@@ -232,6 +232,21 @@ void main() {
 }
 """
 
+_OIT_LAYER_FRAGMENT = """
+#version 330
+uniform sampler2D u_layer_accum;
+uniform sampler2D u_layer_reveal;
+layout(location = 0) out vec4 frag_color;
+layout(location = 1) out float frag_reveal;
+void main() {
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    float absorbed = texelFetch(u_layer_reveal, pixel, 0).r;
+    if (absorbed <= 0.0) discard;
+    frag_color = texelFetch(u_layer_accum, pixel, 0);
+    frag_reveal = absorbed;
+}
+"""
+
 _OIT_COMPOSITE_FRAGMENT = """
 #version 330
 uniform sampler2D u_accum;
@@ -449,6 +464,8 @@ uniform mat3 u_linear;
 uniform vec3 u_origin_from_camera;
 uniform float u_deformation_scale;
 uniform float u_point_size;
+// Extra sprite pixels around the disc so its antialiased fringe is not clipped.
+uniform float u_point_margin;
 in vec3 in_position;
 in vec3 in_displacement;
 out vec3 v_relative;
@@ -458,7 +475,7 @@ void main() {
     v_relative = u_linear * local + u_origin_from_camera;
     v_depth = -(u_view_rotation * vec4(v_relative, 1.0)).z;
     gl_Position = u_projection * u_view_rotation * vec4(v_relative, 1.0);
-    gl_PointSize = u_point_size;
+    gl_PointSize = u_point_size + u_point_margin;
 }
 """
 
@@ -470,6 +487,7 @@ uniform vec3 u_highlight_color;
 uniform vec3 u_preselection_color;
 uniform bool u_has_outline;
 uniform float u_point_size;
+uniform float u_point_margin;
 uniform float u_opacity;
 uniform bool u_section_enabled;
 uniform vec3 u_section_normal;
@@ -483,12 +501,17 @@ ivec2 address(uint index, uint width) {
     return ivec2(int(index % width), int(index / width));
 }
 void main() {
+    // Analytic coverage: distance to the disc edge in pixels, so the rim is
+    // smooth with or without multisampling (which cannot smooth a discard).
     vec2 delta = gl_PointCoord * 2.0 - 1.0;
-    float radial = length(delta);
-    if (radial > 1.0) discard;
+    float radial = length(delta) * 0.5 * (u_point_size + u_point_margin);
+    float radius = 0.5 * u_point_size;
+    float coverage = clamp(radius - radial + 0.5, 0.0, 1.0);
+    if (coverage <= 0.0) discard;
     if (u_section_enabled && dot(u_section_normal, v_relative) < u_section_relative_offset) discard;
-    float border = 1.0 - min(0.75, 2.0 / max(1.0, u_point_size));
-    vec3 color = (u_has_outline && radial >= border) ? u_outline_color : u_color;
+    float border_width = min(0.375 * u_point_size, 1.0);
+    float outline_mix = clamp(radial - (radius - border_width) + 0.5, 0.0, 1.0);
+    vec3 color = u_has_outline ? mix(u_color, u_outline_color, outline_mix) : u_color;
     uint semantic = texelFetch(
         u_semantic_points, address(uint(gl_PrimitiveID), u_point_width), 0
     ).r;
@@ -497,7 +520,7 @@ void main() {
         color = mix(color, u_preselection_color, 0.90);
     else if ((semantic & 1u) != 0u)
         color = mix(color, u_highlight_color, 0.85);
-    emit_color(color, u_opacity, v_depth);
+    emit_color(color, u_opacity * coverage, v_depth);
 }
 """
 
@@ -639,6 +662,8 @@ _OIT_DEPTH_BIAS = 2.0e-5
 # capsules so polyline joints are filled; thinner lines keep the cheaper
 # butt-ended quad.  ANY3DVIEW_ROUND_JOINS=0 forces the quad everywhere.
 _ROUND_JOIN_MIN_HALF_WIDTH = 1.5
+# Pixels of margin around a point sprite for its antialiased rim.
+_POINT_MARGIN_PX = 2.0
 _ROUND_JOINS = os.environ.get("ANY3DVIEW_ROUND_JOINS", "").strip().casefold() not in {
     "0", "false", "off", "no",
 }
@@ -747,6 +772,9 @@ class _Chunk:
     scalar_range: tuple[float, float]
     normal_buffer: Any = None
     has_normals: bool = False
+    # True when some vertex is shared by two or more lines, i.e. the chunk has
+    # joints whose overlap must be unioned when it is drawn translucent.
+    lines_joined: bool = False
 
     @classmethod
     def create(
@@ -944,6 +972,14 @@ class _Chunk:
             scalar_range,
             normal_buffer,
             normal_buffer is not None,
+            bool(
+                mesh.lines is not None
+                and len(mesh.lines) > 1
+                and np.bincount(
+                    np.asarray(mesh.lines, dtype=np.int64).ravel(),
+                    minlength=mesh.node_count,
+                ).max() > 1
+            ),
         )
 
     @staticmethod
@@ -1138,6 +1174,8 @@ class ModernGLRenderer:
         self._msaa_vao = None
         self._oit_program = None
         self._oit_vao = None
+        self._oit_layer_program = None
+        self._oit_layer_vao = None
         self._oit_targets = None
         self._oit_failed = os.environ.get("ANY3DVIEW_OIT", "").strip().casefold() in {
             "0", "false", "off", "no",
@@ -2094,6 +2132,73 @@ class ModernGLRenderer:
         if without_depth:
             ctx.enable(moderngl.DEPTH_TEST)
 
+    def _lines_drawable(
+        self, group: _Group, chunk: _Chunk, show_mesh_lines: bool
+    ) -> bool:
+        return (
+            not group.depth_only
+            and (show_mesh_lines or not group.mesh_lines)
+            and chunk.line_render_vao is not None
+        )
+
+    def _draw_lines_union(
+        self,
+        group: _Group,
+        chunk: _Chunk,
+        frame: _CameraFrame,
+        selection_color: str,
+        preselection_color: str,
+        occlude_lines: bool,
+        show_mesh_lines: bool,
+        depth_range: tuple[float, float],
+        size: tuple[int, int],
+    ) -> None:
+        """Add one translucent line chunk to the accumulation as a union.
+
+        Segments of a polyline overlap at their joints (and round caps overlap
+        the neighbouring body), so summing every fragment would darken each
+        joint.  The chunk is drawn into a scratch layer with MAX blending, which
+        keeps one contribution per pixel, and the layer is then added once.
+        """
+
+        if not self._lines_drawable(group, chunk, show_mesh_lines):
+            return
+        if not chunk.lines_joined:
+            # No shared vertices, so nothing overlaps within the chunk.
+            self._draw_lines(
+                group, chunk, frame, selection_color, preselection_color,
+                occlude_lines, show_mesh_lines, oit=True, depth_range=depth_range,
+            )
+            return
+        ctx = self.ctx
+        _accum, _reveal, _depth, oit_fbo, layer_accum, layer_reveal, layer_fbo = (
+            self._oit_targets
+        )
+        layer_fbo.depth_mask = False  # keep the shared opaque depth when clearing
+        layer_fbo.use()
+        ctx.viewport = (0, 0, size[0], size[1])
+        layer_fbo.clear(0.0, 0.0, 0.0, 0.0)
+        ctx.enable(moderngl.BLEND)
+        ctx.blend_func = moderngl.ONE, moderngl.ONE
+        ctx.blend_equation = moderngl.MAX
+        try:
+            self._draw_lines(
+                group, chunk, frame, selection_color, preselection_color,
+                occlude_lines, show_mesh_lines, oit=True, depth_range=depth_range,
+            )
+        finally:
+            ctx.blend_equation = moderngl.FUNC_ADD
+        oit_fbo.use()
+        ctx.viewport = (0, 0, size[0], size[1])
+        ctx.disable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+        ctx.blend_func = moderngl.ONE, moderngl.ONE
+        layer_accum.use(location=0)
+        layer_reveal.use(location=1)
+        self._set_uniform_value(self._oit_layer_program, "u_layer_accum", 0)
+        self._set_uniform_value(self._oit_layer_program, "u_layer_reveal", 1)
+        self._oit_layer_vao.render(mode=moderngl.TRIANGLES, vertices=3)
+        ctx.enable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+
     def _draw_points(
         self,
         group: _Group,
@@ -2137,6 +2242,11 @@ class ModernGLRenderer:
         self._set_uniform_value(program, "u_oit", oit)
         self._set_uniform_value(program, "u_oit_depth_only", depth_only)
         self._set_uniform_value(program, "u_oit_depth_range", depth_range)
+        self._set_uniform_value(program, "u_point_margin", _POINT_MARGIN_PX)
+        if not oit and not depth_only:
+            # The disc's rim carries fractional alpha; blend it over the scene.
+            ctx.enable(moderngl.BLEND)
+            ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
         chunk.point_render_vao.render(mode=moderngl.POINTS)
         if not depth_only:
             self.draw_calls += 1
@@ -2154,10 +2264,14 @@ class ModernGLRenderer:
 
     def _release_oit(self) -> None:
         self._release_oit_targets()
-        for resource in (self._oit_vao, self._oit_program):
+        for resource in (
+            self._oit_vao, self._oit_program,
+            self._oit_layer_vao, self._oit_layer_program,
+        ):
             if resource is not None:
                 resource.release()
         self._oit_vao = self._oit_program = None
+        self._oit_layer_vao = self._oit_layer_program = None
 
     def _oit_framebuffer(self, size: tuple[int, int]):
         """Return the (re)sized accumulation targets, or ``None`` if unusable.
@@ -2176,6 +2290,13 @@ class ModernGLRenderer:
                     fragment_shader=_OIT_COMPOSITE_FRAGMENT,
                 )
                 self._oit_vao = self.ctx.vertex_array(self._oit_program, [])
+                self._oit_layer_program = self.ctx.program(
+                    vertex_shader=_OIT_COMPOSITE_VERTEX,
+                    fragment_shader=_OIT_LAYER_FRAGMENT,
+                )
+                self._oit_layer_vao = self.ctx.vertex_array(
+                    self._oit_layer_program, []
+                )
             targets = self._oit_targets
             if targets is None or targets[0].size != size:
                 self._release_oit_targets()
@@ -2186,7 +2307,22 @@ class ModernGLRenderer:
                     texture.repeat_x = texture.repeat_y = False
                 depth = self.ctx.depth_renderbuffer(size)
                 framebuffer = self.ctx.framebuffer([accum, reveal], depth)
-                targets = self._oit_targets = (accum, reveal, depth, framebuffer)
+                # A scratch layer sharing the same depth buffer: translucent
+                # lines are rendered here with MAX blending (their union) and
+                # then added to the accumulation, so overlapping parts of one
+                # polyline are not counted twice.
+                layer_accum = self.ctx.texture(size, 4, dtype="f2")
+                layer_reveal = self.ctx.texture(size, 1, dtype="f2")
+                for texture in (layer_accum, layer_reveal):
+                    texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
+                    texture.repeat_x = texture.repeat_y = False
+                layer_framebuffer = self.ctx.framebuffer(
+                    [layer_accum, layer_reveal], depth
+                )
+                targets = self._oit_targets = (
+                    accum, reveal, depth, framebuffer,
+                    layer_accum, layer_reveal, layer_framebuffer,
+                )
             return targets
         except Exception:
             self._oit_failed = True
@@ -2218,7 +2354,8 @@ class ModernGLRenderer:
         targets = self._oit_framebuffer(size)
         if targets is None:
             return False
-        accum, reveal, _depth, oit_fbo = targets
+        accum, reveal, _depth, oit_fbo = targets[:4]
+        layer_accum, layer_reveal, layer_fbo = targets[4:]
         ctx = self.ctx
         depths = []
         for _group, chunk in items:
@@ -2273,9 +2410,9 @@ class ModernGLRenderer:
                 )
                 chunk.render_vao.render(mode=moderngl.TRIANGLES)
                 self.draw_calls += 1
-            self._draw_lines(
+            self._draw_lines_union(
                 group, chunk, frame, selection_color, preselection_color,
-                occlude_lines, show_mesh_lines, oit=True, depth_range=depth_range,
+                occlude_lines, show_mesh_lines, depth_range, size,
             )
             self._draw_points(
                 group, chunk, frame, selection_color, preselection_color,

@@ -264,3 +264,137 @@ def test_overlay_translucent_lines_draw_on_top_of_opaque_surfaces(renderer):
 
     # Green surface is in front of the line, yet the overlay line shows through.
     assert (np.abs(pixels - np.asarray([0, 128, 0])).max(axis=2) <= 6).sum() > 30
+
+
+# ----------------------------------------------- union within a translucent group
+CHAIN = ((-3, 0, 0), (-1.5, 0, 0), (0, 0, 0), (1.5, 0, 0), (3, 0, 0))
+
+
+def tinted(pixels):
+    return pixels.sum(axis=2) < 3 * 250
+
+
+def test_translucent_polyline_has_uniform_alpha_at_its_joints(renderer):
+    renderer.add_mesh(
+        MeshHandle(polyline(CHAIN)), "#000000", line_color="#000000",
+        line_width=12, opacity=0.5,
+    )
+
+    pixels = render(renderer)
+
+    values = pixels[:, :, 0][tinted(pixels)]
+    # 50% black over white everywhere: no darker bead where capsules overlap.
+    assert values.min() >= 128 - 4
+    assert np.abs(values - 128).max() <= 4 or (values > 128).any()  # rim may be lighter
+
+
+def test_translucent_sharp_corner_is_not_darkened_by_the_overlap(renderer):
+    renderer.add_mesh(
+        MeshHandle(polyline(V_SHAPE)), "#000000", line_color="#000000",
+        line_width=12, opacity=0.5,
+    )
+
+    pixels = render(renderer)
+
+    assert pixels[:, :, 0][tinted(pixels)].min() >= 128 - 4
+
+
+def test_separate_translucent_groups_still_accumulate_where_they_cross(renderer):
+    for points in (((-2, -1.5, 0), (2, 1.5, 0)), ((-2, 1.5, 0), (2, -1.5, 0))):
+        renderer.add_mesh(
+            MeshHandle(polyline(points)), "#000000", line_color="#000000",
+            line_width=8, opacity=0.5,
+        )
+
+    pixels = render(renderer)
+
+    # Two layers of 50% black: 25% of white remains where they cross.
+    assert pixels[:, :, 0][tinted(pixels)].min() <= 64 + 6
+
+
+def test_opaque_surface_in_front_hides_a_translucent_line_behind_it(renderer):
+    renderer.add_mesh(MeshHandle(triangle(1.0, 6.0)), "#00ff00", lit=False)
+    renderer.add_mesh(
+        MeshHandle(polyline(((-2, 0, 0.0), (2, 0, 0.0)))), "#000000",
+        line_color="#000000", line_width=8, opacity=0.5,
+    )
+
+    pixels = render(renderer)
+
+    # Where the surface covers the line it stays pure green (depth is shared
+    # with the scratch layer, and clearing the layer does not erase it).
+    inside = (np.abs(pixels - np.asarray([0, 255, 0])).max(axis=2) <= 2)
+    assert inside.sum() > 200
+    assert not ((np.abs(pixels - np.asarray([0, 128, 0])).max(axis=2) <= 6)).any()
+
+
+# ------------------------------------------------------------ antialiased points
+def point_pixels(renderer, size, *, outline="", samples=0):
+    renderer.add_mesh(
+        MeshHandle(points_mesh(((0, 0, 0),))), "#000000", point_color="#000000",
+        point_outline=outline, point_size=size,
+    )
+    return render(renderer, samples=samples)[:, :, 0]
+
+
+def test_point_rim_is_antialiased_without_multisampling(renderer):
+    values = point_pixels(renderer, 14)
+
+    intermediate = int(((values > 10) & (values < 245)).sum())
+    assert intermediate >= 12  # a hard discard would give none
+
+
+def test_point_keeps_its_nominal_size(renderer):
+    values = point_pixels(renderer, 14)
+
+    coverage = float((255 - values).sum() / 255.0)
+    assert coverage == pytest.approx(np.pi * 7.0**2, rel=0.08)
+
+
+def test_point_pick_sprite_is_not_enlarged_by_the_render_margin(renderer):
+    renderer.add_mesh(MeshHandle(points_mesh(((0, 0, 0),))), "#000000", point_size=14)
+    render(renderer)  # compiles and uses the render program
+
+    assert renderer.point_pick_program["u_point_margin"].value == 0.0
+    assert renderer.point_program["u_point_margin"].value == 2.0
+
+
+def test_outlined_point_has_a_smooth_outline_ring(renderer):
+    values = point_pixels(renderer, 18, outline="#ffffff")
+
+    # Black disc with a white 1 px rim: the ring blends rather than switching.
+    ring = values[(values > 10) & (values < 245)]
+    assert ring.size >= 20
+
+
+def test_translucent_point_rim_blends_through_oit(renderer):
+    renderer.add_mesh(
+        MeshHandle(points_mesh(((0, 0, 0),))), "#000000", point_color="#000000",
+        point_size=16, opacity=0.5,
+    )
+
+    values = render(renderer)[:, :, 0]
+
+    rim = values[(values > 140) & (values < 245)]
+    assert rim.size >= 8  # partial coverage x 50% alpha, not a hard edge
+
+
+def test_only_chunks_with_shared_vertices_need_the_union_layer(renderer):
+    chain = MeshHandle(polyline(CHAIN))
+    disjoint = MeshHandle(
+        MeshArrays(
+            np.asarray([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=np.float32),
+            np.empty((0, 3), dtype=np.uint32),
+            lines=np.asarray([[0, 1], [2, 3]], dtype=np.uint32),
+        )
+    )
+    single = MeshHandle(polyline(((0, 0, 0), (1, 0, 0))))
+    for handle in (chain, disjoint, single):
+        renderer.add_mesh(handle, "#000000", line_color="#000000", opacity=0.5)
+
+    flags = [
+        renderer._groups[id(handle)].chunks[0][1].lines_joined
+        for handle in (chain, disjoint, single)
+    ]
+
+    assert flags == [True, False, False]

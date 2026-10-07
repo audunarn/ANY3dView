@@ -191,6 +191,10 @@ class _GLSurface(_InputSurface, QOpenGLWidget):
         fmt = QSurfaceFormat()
         fmt.setVersion(3, 3)
         fmt.setProfile(QSurfaceFormat.CoreProfile)
+        from .gpu.quality import msaa_samples
+        samples = msaa_samples()
+        if samples > 1:
+            fmt.setSamples(samples)
         fmt.setDepthBufferSize(24)
         self.setFormat(fmt)
         self.setMouseTracking(True)

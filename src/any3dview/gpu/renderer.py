@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from functools import lru_cache
 import math
 import re
@@ -31,16 +32,22 @@ uniform mat4 u_projection;
 uniform mat3 u_linear;
 uniform vec3 u_origin_from_camera;
 uniform float u_deformation_scale;
+uniform float u_depth_bias;
 in vec3 in_position;
 in vec3 in_displacement;
 in float in_node_scalar;
 out vec3 v_relative;
 out float v_node_scalar;
+out float v_depth;
 void main() {
     vec3 local = in_position + u_deformation_scale * in_displacement;
     v_relative = u_linear * local + u_origin_from_camera;
     v_node_scalar = in_node_scalar;
+    v_depth = -(u_view_rotation * vec4(v_relative, 1.0)).z;
     gl_Position = u_projection * u_view_rotation * vec4(v_relative, 1.0);
+    // Pull translucent surfaces marginally toward the camera so a shell lying
+    // exactly on an opaque surface does not z-fight with it.
+    gl_Position.z -= u_depth_bias * gl_Position.w;
 }
 """
 
@@ -82,9 +89,14 @@ uniform usampler2D u_selected_elements;
 uniform usampler2D u_semantic_elements;
 uniform sampler2D u_element_scalars;
 uniform sampler2D u_colormap;
+uniform bool u_oit;
+uniform bool u_oit_depth_only;
+uniform vec2 u_oit_depth_range;
 in vec3 v_relative;
 in float v_node_scalar;
-out vec4 frag_color;
+in float v_depth;
+layout(location = 0) out vec4 frag_color;
+layout(location = 1) out float frag_reveal;
 ivec2 address(uint index, uint width) {
     return ivec2(int(index % width), int(index / width));
 }
@@ -157,7 +169,62 @@ void main() {
         shaded = mix(shaded, u_highlight_color, 0.72);
     else if (texelFetch(u_selected_elements, address(element, u_element_width), 0).r != 0u)
         shaded = mix(shaded, u_selection_color, 0.65);
-    frag_color = vec4(shaded, stipple_count < 64 ? 1.0 : u_opacity);
+    float alpha = stipple_count < 64 ? 1.0 : u_opacity;
+    if (u_oit_depth_only) {
+        // Depth replay of the opaque scene: contribute nothing to the
+        // accumulation targets (colour masks do not cover both attachments).
+        frag_color = vec4(0.0);
+        frag_reveal = 0.0;
+    } else if (u_oit) {
+        // Weighted blended order-independent transparency.  The colour
+        // target accumulates premultiplied colour and weight; the second
+        // target accumulates -log(1 - alpha), so that exp(-sum) is the exact
+        // product of the layers' transmittances without a separate blend mode.
+        float span = max(1.0e-6, u_oit_depth_range.y - u_oit_depth_range.x);
+        float nearness = 1.0 - clamp((v_depth - u_oit_depth_range.x) / span, 0.0, 1.0);
+        float weight = 1.0 + 3.0 * nearness;
+        float covered = min(alpha, 0.999);
+        frag_color = vec4(shaded * covered * weight, covered * weight);
+        frag_reveal = -log(1.0 - covered);
+    } else {
+        frag_color = vec4(shaded, alpha);
+        frag_reveal = 0.0;
+    }
+}
+"""
+
+_OIT_COMPOSITE_VERTEX = """
+#version 330
+void main() {
+    vec2 corner = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+    gl_Position = vec4(corner * 2.0 - 1.0, 0.0, 1.0);
+}
+"""
+
+_MSAA_RESOLVE_FRAGMENT = """
+#version 330
+uniform sampler2D u_color;
+uniform sampler2D u_depth;
+out vec4 frag_color;
+void main() {
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    frag_color = texelFetch(u_color, pixel, 0);
+    gl_FragDepth = texelFetch(u_depth, pixel, 0).r;
+}
+"""
+
+_OIT_COMPOSITE_FRAGMENT = """
+#version 330
+uniform sampler2D u_accum;
+uniform sampler2D u_reveal;
+out vec4 frag_color;
+void main() {
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    float absorbed = texelFetch(u_reveal, pixel, 0).r;
+    float alpha = 1.0 - exp(-absorbed);
+    if (alpha < 1.0e-4) discard;
+    vec4 accum = texelFetch(u_accum, pixel, 0);
+    frag_color = vec4(accum.rgb / max(accum.a, 1.0e-5), alpha);
 }
 """
 
@@ -489,6 +556,26 @@ def _stipple_windows(
     back_count = max(1, min(remaining, int(round(coverage * remaining))))
     return (0, front_count, rotation), (front_count, back_count, rotation)
 
+
+def _surface_stipple_windows(
+    value: object, opacity: float, phase: int = 0
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    """Stipple windows for drawing a surface group.
+
+    Only an explicit stipple pattern is dithered.  Plain opacity is blended
+    (order-independently) rather than turned into a Bayer mask, so a
+    translucent surface keeps its colour and shading instead of showing dots;
+    it is also pickable over its whole area.
+    """
+
+    if str(value or ""):
+        return _stipple_windows(value, opacity, phase)
+    window = (0, 64, (int(phase) % 4) * 16)
+    return window, window
+
+
+# Clip-space depth bias for the translucent pass (fraction of the depth range).
+_OIT_DEPTH_BIAS = 2.0e-5
 
 _DEFAULT_LIGHT = Light()
 _MISSING = object()
@@ -966,6 +1053,15 @@ class ModernGLRenderer:
             (1, 1), 3, np.zeros(3, dtype=np.float32).tobytes(), dtype="f4"
         )
         self._empty_face_color.use(location=5)
+        self._msaa_targets = None
+        self._msaa_program = None
+        self._msaa_vao = None
+        self._oit_program = None
+        self._oit_vao = None
+        self._oit_targets = None
+        self._oit_failed = os.environ.get("ANY3DVIEW_OIT", "").strip().casefold() in {
+            "0", "false", "off", "no",
+        }
         self._groups: dict[int, _Group] = {}
         self._pick_fbo = None
         self._pick_texture = None
@@ -1659,6 +1755,327 @@ class ModernGLRenderer:
         )
         program["u_deformation_scale"].value = chunk.handle.deformation_scale
 
+    def _surface_uniforms(
+        self,
+        group: _Group,
+        chunk: _Chunk,
+        frame: _CameraFrame,
+        camera: Camera3D,
+        light: Optional[Light],
+        shading_enabled: bool,
+        selection_color: str,
+        preselection_color: str,
+        *,
+        oit: bool = False,
+        oit_depth_range: tuple[float, float] = (0.0, 1.0),
+    ) -> None:
+        """Bind the surface program's per-chunk state (shared by every pass)."""
+
+        self._uniforms(self.render_program, chunk, frame)
+        chunk.bind_fields(self.render_program, self._set_uniform_value)
+        self._set_uniform_value(self.render_program, "u_color", _rgb(chunk.color))
+        self._set_uniform_value(
+            self.render_program,
+            "u_back_color",
+            _rgb(group.back_color or chunk.color),
+        )
+        self._set_uniform_value(
+            self.render_program, "u_invalid_color", _rgb(group.invalid_color)
+        )
+        self._set_uniform_value(
+            self.render_program, "u_has_back_color", bool(group.back_color)
+        )
+        self._set_uniform_value(
+            self.render_program, "u_has_face_colors", chunk.has_face_colors
+        )
+        self._set_uniform_value(
+            self.render_program, "u_selection_color", _rgb(selection_color)
+        )
+        self._set_uniform_value(
+            self.render_program, "u_highlight_color", _rgb(selection_color)
+        )
+        self._set_uniform_value(
+            self.render_program,
+            "u_preselection_color",
+            _rgb(preselection_color),
+        )
+        configured_light = light if light is not None else _DEFAULT_LIGHT
+        if configured_light.follow_camera:
+            light_direction = tuple(
+                float(value)
+                for value in configured_light.world_direction(camera.basis())
+            )
+        else:
+            direction = configured_light.direction
+            light_direction = (direction.x, direction.y, direction.z)
+        self._set_uniform_value(
+            self.render_program, "u_light_direction", light_direction
+        )
+        self._set_uniform_value(
+            self.render_program, "u_light_ambient", configured_light.ambient
+        )
+        self._set_uniform_value(
+            self.render_program, "u_light_diffuse", configured_light.diffuse
+        )
+        self._set_uniform_value(
+            self.render_program, "u_light_specular", configured_light.specular
+        )
+        self._set_uniform_value(
+            self.render_program, "u_light_shininess", configured_light.shininess
+        )
+        self._set_uniform_value(
+            self.render_program,
+            "u_shading_enabled",
+            bool(shading_enabled and group.lit and configured_light.enabled),
+        )
+        front_stipple, back_stipple = _surface_stipple_windows(
+            group.stipple, group.opacity, group.stipple_phase
+        )
+        stipple_start, stipple_count, stipple_rotation = front_stipple
+        back_stipple_start, back_stipple_count, _ = back_stipple
+        self._set_uniform_value(
+            self.render_program, "u_stipple_start", stipple_start
+        )
+        self._set_uniform_value(
+            self.render_program, "u_stipple_count", stipple_count
+        )
+        self._set_uniform_value(
+            self.render_program, "u_stipple_back_start", back_stipple_start
+        )
+        self._set_uniform_value(
+            self.render_program, "u_stipple_back_count", back_stipple_count
+        )
+        self._set_uniform_value(
+            self.render_program, "u_stipple_rotation", stipple_rotation
+        )
+        self._set_uniform_value(
+            self.render_program, "u_has_scalars", chunk.has_scalars
+        )
+        self._set_uniform_value(
+            self.render_program, "u_node_scalars", chunk.node_scalars
+        )
+        self._set_uniform_value(
+            self.render_program, "u_opacity", group.opacity
+        )
+        self._set_uniform_value(
+            self.render_program,
+            "u_scalar_range",
+            group.scalar_range or chunk.scalar_range,
+        )
+        self._set_uniform_value(self.render_program, "u_oit", oit)
+        self._set_uniform_value(
+            self.render_program, "u_oit_depth_range", oit_depth_range
+        )
+
+
+    def _release_msaa(self) -> None:
+        targets, self._msaa_targets = self._msaa_targets, None
+        for resource in () if targets is None or targets[2] is None else targets[2]:
+            try:
+                resource.release()
+            except Exception:
+                pass
+        for resource in (self._msaa_vao, self._msaa_program):
+            if resource is not None:
+                resource.release()
+        self._msaa_vao = self._msaa_program = None
+
+    def _msaa_framebuffer(self, size: tuple[int, int], samples: int):
+        """Return a multisampled framebuffer, or ``None`` if one cannot be made."""
+
+        targets = self._msaa_targets
+        if targets is not None and targets[:2] == (size, samples):
+            return None if targets[2] is None else targets[2][-2:]
+        self._release_msaa()
+        try:
+            color = self.ctx.renderbuffer(size, samples=samples)
+            depth = self.ctx.depth_renderbuffer(size, samples=samples)
+            multisampled = self.ctx.framebuffer(color, depth)
+            resolved_color = self.ctx.texture(size, 4)
+            resolved_color.filter = (moderngl.NEAREST, moderngl.NEAREST)
+            resolved_depth = self.ctx.depth_texture(size)
+            resolved_depth.filter = (moderngl.NEAREST, moderngl.NEAREST)
+            resolved_depth.compare_func = ""
+            resolved = self.ctx.framebuffer(resolved_color, resolved_depth)
+            if self._msaa_program is None:
+                self._msaa_program = self.ctx.program(
+                    vertex_shader=_OIT_COMPOSITE_VERTEX,
+                    fragment_shader=_MSAA_RESOLVE_FRAGMENT,
+                )
+                self._msaa_vao = self.ctx.vertex_array(self._msaa_program, [])
+        except Exception:
+            # Remember the failure for this size so it is not retried per frame.
+            self._msaa_targets = (size, samples, None)
+            return None
+        self._msaa_targets = (
+            size, samples,
+            (color, depth, resolved_color, resolved_depth, multisampled, resolved),
+        )
+        return multisampled, resolved
+
+    def _resolve_msaa(
+        self, multisampled: Any, resolved: Any, destination: Any, size: tuple[int, int]
+    ) -> None:
+        """Resolve samples to a plain framebuffer, then draw it to ``destination``.
+
+        Blitting straight into a window's default framebuffer is not honoured
+        by every driver, so the resolve goes through a texture-backed
+        framebuffer and a fullscreen pass that also restores scene depth for
+        the depth-tested HUD.
+        """
+
+        ctx = self.ctx
+        ctx.copy_framebuffer(resolved, multisampled)
+        resolved_color, resolved_depth = self._msaa_targets[2][2:4]
+        destination.use()
+        ctx.viewport = (0, 0, size[0], size[1])
+        ctx.disable(moderngl.BLEND | moderngl.CULL_FACE)
+        ctx.enable(moderngl.DEPTH_TEST)
+        ctx.depth_func = "1"
+        ctx.depth_mask = True
+        resolved_color.use(location=0)
+        resolved_depth.use(location=1)
+        self._set_uniform_value(self._msaa_program, "u_color", 0)
+        self._set_uniform_value(self._msaa_program, "u_depth", 1)
+        self._msaa_vao.render(mode=moderngl.TRIANGLES, vertices=3)
+        ctx.depth_func = "<="
+
+    def _release_oit_targets(self) -> None:
+        targets, self._oit_targets = self._oit_targets, None
+        if targets is not None:
+            for resource in targets:
+                try:
+                    resource.release()
+                except Exception:
+                    pass
+
+    def _release_oit(self) -> None:
+        self._release_oit_targets()
+        for resource in (self._oit_vao, self._oit_program):
+            if resource is not None:
+                resource.release()
+        self._oit_vao = self._oit_program = None
+
+    def _oit_framebuffer(self, size: tuple[int, int]):
+        """Return the (re)sized accumulation targets, or ``None`` if unusable.
+
+        Order-independent transparency needs float render targets.  Any
+        failure disables it for this renderer and the blended, depth-sorted
+        path draws instead; it never prevents the scene from rendering.
+        """
+
+        if self._oit_failed:
+            return None
+        try:
+            if self._oit_program is None:
+                self._oit_program = self.ctx.program(
+                    vertex_shader=_OIT_COMPOSITE_VERTEX,
+                    fragment_shader=_OIT_COMPOSITE_FRAGMENT,
+                )
+                self._oit_vao = self.ctx.vertex_array(self._oit_program, [])
+            targets = self._oit_targets
+            if targets is None or targets[0].size != size:
+                self._release_oit_targets()
+                accum = self.ctx.texture(size, 4, dtype="f2")
+                reveal = self.ctx.texture(size, 1, dtype="f2")
+                for texture in (accum, reveal):
+                    texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
+                    texture.repeat_x = texture.repeat_y = False
+                depth = self.ctx.depth_renderbuffer(size)
+                framebuffer = self.ctx.framebuffer([accum, reveal], depth)
+                targets = self._oit_targets = (accum, reveal, depth, framebuffer)
+            return targets
+        except Exception:
+            self._oit_failed = True
+            self._release_oit_targets()
+            return None
+
+    def _render_oit(
+        self,
+        framebuffer: Any,
+        viewport: tuple[int, int],
+        frame: _CameraFrame,
+        camera: Camera3D,
+        light: Optional[Light],
+        shading_enabled: bool,
+        selection_color: str,
+        preselection_color: str,
+        opaque_items: list,
+        items: list,
+    ) -> bool:
+        """Draw translucent surfaces with weighted blended OIT.
+
+        Returns ``False`` when float targets are unavailable so the caller can
+        use the depth-sorted blended path instead.
+        """
+
+        size = (int(viewport[0]), int(viewport[1]))
+        targets = self._oit_framebuffer(size)
+        if targets is None:
+            return False
+        accum, reveal, _depth, oit_fbo = targets
+        ctx = self.ctx
+        depths = []
+        for _group, chunk in items:
+            center, radius = self._chunk_world_bounds(chunk)
+            centre_depth = float(np.dot(center - frame.position, frame.forward))
+            depths.extend((centre_depth - radius, centre_depth + radius))
+        depth_range = (min(depths), max(depths))
+
+        oit_fbo.use()
+        ctx.viewport = (0, 0, size[0], size[1])
+        oit_fbo.clear(0.0, 0.0, 0.0, 0.0, depth=1.0)
+        ctx.enable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+        ctx.disable(moderngl.BLEND)
+        # The opaque scene's depth lives in the caller's target (often a
+        # default framebuffer that cannot be attached here), so replay the
+        # opaque surfaces depth-only to occlude translucent fragments.
+        ctx.depth_mask = True
+        ctx.enable(moderngl.BLEND)
+        ctx.blend_func = moderngl.ONE, moderngl.ONE
+        self._set_uniform_value(self.render_program, "u_oit_depth_only", True)
+        for group, chunk in opaque_items:
+            if not chunk.mesh.triangle_count:
+                continue
+            if not group.cull_backface:
+                ctx.disable(moderngl.CULL_FACE)
+            self._surface_uniforms(
+                group, chunk, frame, camera, light, shading_enabled,
+                selection_color, preselection_color,
+            )
+            chunk.render_vao.render(mode=moderngl.TRIANGLES)
+            ctx.enable(moderngl.CULL_FACE)
+        self._set_uniform_value(self.render_program, "u_oit_depth_only", False)
+        ctx.depth_mask = False
+        self._set_uniform_value(self.render_program, "u_depth_bias", _OIT_DEPTH_BIAS)
+        for group, chunk in items:
+            if not group.cull_backface:
+                ctx.disable(moderngl.CULL_FACE)
+            self._surface_uniforms(
+                group, chunk, frame, camera, light, shading_enabled,
+                selection_color, preselection_color,
+                oit=True, oit_depth_range=depth_range,
+            )
+            chunk.render_vao.render(mode=moderngl.TRIANGLES)
+            self.draw_calls += 1
+            ctx.enable(moderngl.CULL_FACE)
+        self._set_uniform_value(self.render_program, "u_oit", False)
+        self._set_uniform_value(self.render_program, "u_depth_bias", 0.0)
+
+        framebuffer.use()
+        ctx.viewport = (0, 0, size[0], size[1])
+        ctx.disable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+        ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+        accum.use(location=0)
+        reveal.use(location=1)
+        self._set_uniform_value(self._oit_program, "u_accum", 0)
+        self._set_uniform_value(self._oit_program, "u_reveal", 1)
+        self._oit_vao.render(mode=moderngl.TRIANGLES, vertices=3)
+        ctx.enable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
+        ctx.disable(moderngl.BLEND)
+        ctx.depth_mask = True
+        return True
+
     def render(
         self,
         camera: Camera3D,
@@ -1673,10 +2090,27 @@ class ModernGLRenderer:
         show_mesh_lines: bool = True,
         selection_color: str = "#ff8c00",
         preselection_color: str = "#ffd166",
+        samples: int = 0,
     ) -> None:
+        """Draw the scene.
+
+        ``samples`` > 1 antialiases the render by drawing into an internal
+        multisampled framebuffer and resolving colour and depth into
+        ``target`` (the screen when omitted).  Leave it at 0 when the target is
+        already multisampled, as Qt's widget framebuffer is.
+        """
+
         self.frame_count += 1
         for group in list(self._groups.values()):
             self._sync(group)
+        resolve_to = destination = None
+        if int(samples) > 1:
+            size = (int(viewport[0]), int(viewport[1]))
+            pair = self._msaa_framebuffer(size, int(samples))
+            if pair is not None:
+                resolve_to = pair[1]
+                destination = target or self.ctx.screen
+                target = pair[0]
         framebuffer = target or self.ctx.screen
         framebuffer.use()
         self.ctx.viewport = (0, 0, int(viewport[0]), int(viewport[1]))
@@ -1702,12 +2136,31 @@ class ModernGLRenderer:
                 ),
             ),
         )
-        ordered = sorted(
+        opaque_items = sorted(
             (item for item in draw_items if item[0].opacity >= 0.999),
             key=lambda item: item[0].layer,
-        ) + transparent
+        )
+        ordered = opaque_items + transparent
+        # Translucent surfaces without an explicit stipple pattern are drawn
+        # order-independently once the opaque scene is in; their lines and
+        # points are still blended in sorted order afterwards.
+        oit_items = [
+            item for item in transparent
+            if item[1].mesh.triangle_count
+            and not item[0].stipple
+            and not item[0].depth_only
+        ]
+        oit_ids: set[int] = set()
+        oit_pending = bool(oit_items)
         for group, chunk in ordered:
             is_transparent = group.opacity < 0.999
+            if is_transparent and oit_pending:
+                oit_pending = False
+                if self._render_oit(
+                    framebuffer, viewport, frame, camera, light, shading_enabled,
+                    selection_color, preselection_color, opaque_items, oit_items,
+                ):
+                    oit_ids = {id(item[1]) for item in oit_items}
             if is_transparent:
                 self.ctx.enable(moderngl.BLEND)
                 self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
@@ -1719,98 +2172,13 @@ class ModernGLRenderer:
                 self.ctx.disable(moderngl.CULL_FACE)
             if group.depth_only:
                 self.ctx.color_mask = (False, False, False, False)
-            self._uniforms(self.render_program, chunk, frame)
-            chunk.bind_fields(self.render_program, self._set_uniform_value)
-            self._set_uniform_value(self.render_program, "u_color", _rgb(chunk.color))
-            self._set_uniform_value(
-                self.render_program,
-                "u_back_color",
-                _rgb(group.back_color or chunk.color),
-            )
-            self._set_uniform_value(
-                self.render_program, "u_invalid_color", _rgb(group.invalid_color)
-            )
-            self._set_uniform_value(
-                self.render_program, "u_has_back_color", bool(group.back_color)
-            )
-            self._set_uniform_value(
-                self.render_program, "u_has_face_colors", chunk.has_face_colors
-            )
-            self._set_uniform_value(
-                self.render_program, "u_selection_color", _rgb(selection_color)
-            )
-            self._set_uniform_value(
-                self.render_program, "u_highlight_color", _rgb(selection_color)
-            )
-            self._set_uniform_value(
-                self.render_program,
-                "u_preselection_color",
-                _rgb(preselection_color),
-            )
-            configured_light = light if light is not None else _DEFAULT_LIGHT
-            if configured_light.follow_camera:
-                light_direction = tuple(
-                    float(value)
-                    for value in configured_light.world_direction(camera.basis())
+            drawn_by_oit = id(chunk) in oit_ids
+            if not drawn_by_oit:
+                self._surface_uniforms(
+                    group, chunk, frame, camera, light, shading_enabled,
+                    selection_color, preselection_color,
                 )
-            else:
-                direction = configured_light.direction
-                light_direction = (direction.x, direction.y, direction.z)
-            self._set_uniform_value(
-                self.render_program, "u_light_direction", light_direction
-            )
-            self._set_uniform_value(
-                self.render_program, "u_light_ambient", configured_light.ambient
-            )
-            self._set_uniform_value(
-                self.render_program, "u_light_diffuse", configured_light.diffuse
-            )
-            self._set_uniform_value(
-                self.render_program, "u_light_specular", configured_light.specular
-            )
-            self._set_uniform_value(
-                self.render_program, "u_light_shininess", configured_light.shininess
-            )
-            self._set_uniform_value(
-                self.render_program,
-                "u_shading_enabled",
-                bool(shading_enabled and group.lit and configured_light.enabled),
-            )
-            front_stipple, back_stipple = _stipple_windows(
-                group.stipple, group.opacity, group.stipple_phase
-            )
-            stipple_start, stipple_count, stipple_rotation = front_stipple
-            back_stipple_start, back_stipple_count, _ = back_stipple
-            self._set_uniform_value(
-                self.render_program, "u_stipple_start", stipple_start
-            )
-            self._set_uniform_value(
-                self.render_program, "u_stipple_count", stipple_count
-            )
-            self._set_uniform_value(
-                self.render_program, "u_stipple_back_start", back_stipple_start
-            )
-            self._set_uniform_value(
-                self.render_program, "u_stipple_back_count", back_stipple_count
-            )
-            self._set_uniform_value(
-                self.render_program, "u_stipple_rotation", stipple_rotation
-            )
-            self._set_uniform_value(
-                self.render_program, "u_has_scalars", chunk.has_scalars
-            )
-            self._set_uniform_value(
-                self.render_program, "u_node_scalars", chunk.node_scalars
-            )
-            self._set_uniform_value(
-                self.render_program, "u_opacity", group.opacity
-            )
-            self._set_uniform_value(
-                self.render_program,
-                "u_scalar_range",
-                group.scalar_range or chunk.scalar_range,
-            )
-            if chunk.mesh.triangle_count:
+            if chunk.mesh.triangle_count and not drawn_by_oit:
                 chunk.render_vao.render(mode=moderngl.TRIANGLES)
                 self.draw_calls += 1
             line_without_depth = False
@@ -1901,6 +2269,11 @@ class ModernGLRenderer:
                 self.ctx.color_mask = (True, True, True, True)
         self.ctx.depth_mask = True
         self.ctx.disable(moderngl.BLEND)
+        if resolve_to is not None:
+            self._resolve_msaa(
+                framebuffer, resolve_to, destination,
+                (int(viewport[0]), int(viewport[1])),
+            )
 
     def _chunk_world_bounds(self, chunk: _Chunk) -> tuple[np.ndarray, float]:
         """Return exact transformed bounds, caching until the transform changes."""
@@ -2000,7 +2373,7 @@ class ModernGLRenderer:
                 self._uniforms(self.pick_program, chunk, frame)
                 chunk.bind_fields(self.pick_program, self._set_uniform_value)
                 self._set_uniform_value(self.pick_program, "u_pick_base", base)
-                front_stipple, back_stipple = _stipple_windows(
+                front_stipple, back_stipple = _surface_stipple_windows(
                     group.stipple, group.opacity, group.stipple_phase
                 )
                 stipple_start, stipple_count, stipple_rotation = front_stipple
@@ -2234,4 +2607,6 @@ class ModernGLRenderer:
         self.line_pick_program.release()
         self.point_program.release()
         self.point_pick_program.release()
+        self._release_oit()
+        self._release_msaa()
         self._empty_face_color.release()

@@ -56,6 +56,7 @@ from ..selection import (
 )
 from ..retained_viewer import RetainedViewer
 from .host import TkinterGLHost
+from .quality import msaa_samples
 from .hud import GPUHudRenderer
 from .renderer import ModernGLRenderer
 
@@ -317,6 +318,7 @@ class Any3DView(RetainedViewer, ttk.Frame):
             occlude_lines=self._occlude_lines, show_mesh_lines=self.show_mesh_lines,
             selection_color=self._highlight_fill,
             preselection_color="#ffd166",
+            samples=msaa_samples(),
         )
         self._render_hud((width, height))
         # The default framebuffer may retain its size from context creation.
@@ -347,6 +349,7 @@ class Any3DView(RetainedViewer, ttk.Frame):
             show_mesh_lines=self.show_mesh_lines,
             selection_color=self._highlight_fill,
             preselection_color="#ffd166",
+            samples=msaa_samples(),
         )
         self._render_hud(size)
         self._host.swap_buffers()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 from copy import deepcopy
 import sys
 import time
@@ -224,6 +225,41 @@ class RetainedViewer:
     def event_widget(self) -> object:
         return self._host.surface
 
+
+    def _native_pixel_ratio(self) -> float:
+        """Device pixels per logical pixel reported by the toolkit (1 by default)."""
+
+        return 1.0
+
+    @property
+    def pixel_ratio(self) -> float:
+        """Device pixels per logical pixel used to scale lines, points and the HUD.
+
+        ``ANY3DVIEW_PIXEL_RATIO`` overrides the toolkit's value, which is useful
+        for checking a HiDPI layout on a standard display.
+        """
+
+        requested = os.environ.get("ANY3DVIEW_PIXEL_RATIO", "").strip()
+        try:
+            if requested:
+                value = float(requested)
+            else:
+                # Toolkits report dpi / 96 (1.0005 at "96.05 dpi"); snap to the
+                # quarter steps operating systems offer (100%, 125%, 150%...).
+                value = round(float(self._native_pixel_ratio()) * 4.0) / 4.0
+        except (TypeError, ValueError):
+            value = 1.0
+        return min(8.0, max(0.5, value)) if value == value else 1.0
+
+    def _sync_pixel_ratio(self) -> float:
+        """Tell the renderer the current ratio before it draws or picks."""
+
+        ratio = self.pixel_ratio
+        renderer = getattr(self, "_renderer", None)
+        if renderer is not None and getattr(renderer, "pixel_ratio", ratio) != ratio:
+            renderer.pixel_ratio = ratio
+            renderer.pick_dirty = True
+        return ratio
 
     @property
     def viewport_size(self) -> tuple[int, int]:
@@ -625,7 +661,7 @@ class RetainedViewer:
                 self._selection_dragging = math.hypot(
                     point[0] - self._selection_press[0],
                     point[1] - self._selection_press[1],
-                ) >= self._selection_config.drag_threshold_px
+                ) >= self._selection_config.drag_threshold_px * self.pixel_ratio
             self._motion(event)
             return
         if self._selection_press is None or self._selection_config.tool is SelectionTool.SINGLE:
@@ -635,7 +671,7 @@ class RetainedViewer:
         if not self._selection_dragging:
             self._selection_dragging = math.hypot(
                 point[0] - self._selection_press[0], point[1] - self._selection_press[1]
-            ) >= self._selection_config.drag_threshold_px
+            ) >= self._selection_config.drag_threshold_px * self.pixel_ratio
         if self._selection_dragging and self._selection_config.tool is SelectionTool.LASSO:
             previous = self._selection_points[-1]
             if math.hypot(point[0] - previous[0], point[1] - previous[1]) >= 3.0:
@@ -710,7 +746,7 @@ class RetainedViewer:
         repeat_anchor = (
             self._cycle_anchor is not None
             and math.hypot(point[0] - self._cycle_anchor[0], point[1] - self._cycle_anchor[1])
-            <= self._selection_config.cycle_radius_px
+            <= self._selection_config.cycle_radius_px * self.pixel_ratio
             and (now - self._cycle_time) * 1000.0
             <= self._selection_config.cycle_timeout_ms
         )
@@ -1609,6 +1645,7 @@ class RetainedViewer:
         host = getattr(self, "_host", None)
         if renderer is None or host is None or not hasattr(renderer, "pick"):
             return None
+        self._sync_pixel_ratio()
         host.make_current()
         viewport = host.framebuffer_size()
         remaining_kinds = {"triangle", "line", "point"}
@@ -1736,8 +1773,9 @@ class RetainedViewer:
 
         policy = config or self._selection_config
         active_filter = selection_filter or policy.filter
-        effective_radius = (
-            policy.click_radius_px if radius is None else max(0, int(radius))
+        effective_radius = round(
+            self.pixel_ratio
+            * (policy.click_radius_px if radius is None else max(0, int(radius)))
         )
         gpu_only = policy.depth is SelectionDepth.VISIBLE and (
             front_only
@@ -3277,20 +3315,37 @@ class RetainedViewer:
                     target = preselected if self._preselected_key in matched and not matched & self._highlighted_tags else selected
                     target.append(triangle)
                 for triangles, color in ((selected, self._highlight_outline), (preselected, "#b77900")):
+                    ratio = self.pixel_ratio
                     for points in self._surface_outline_segments(entry, chunk_id, mesh, triangles, world):
-                        hud.line(*(point[:2] for point in points), color, width=2.5)
+                        hud.line(*((point[0] / ratio, point[1] / ratio) for point in points), color, width=2.5)
 
     def _render_hud(self, viewport: tuple[int, int], *, target=None) -> None:
         """Render labels, legends, selection outlines and gestures in OpenGL."""
 
-        width, height = viewport
+        ratio = self._sync_pixel_ratio()
         hud = self._hud
-        hud.begin(viewport)
+        # Only pass the ratio when it matters, so HUD implementations written
+        # for the one-argument contract keep working at ratio 1.
+        if ratio == 1.0:
+            hud.begin(viewport)
+        else:
+            hud.begin(viewport, ratio)
+        # Lay out in logical pixels; the HUD scales sizes to device pixels.
+        width, height = viewport[0] / ratio, viewport[1] / ratio
+
+        def logical(point):
+            return (point[0] / ratio, point[1] / ratio)
+
+        def project(point):
+            projected = self.project_point(point)
+            if projected is None:
+                return None
+            return (projected[0] / ratio, projected[1] / ratio, projected[2])
         for value in sorted(self._world_text, key=lambda item: item["layer"]):
             plane = self._section_plane
             if plane is not None and plane.enabled and not plane.contains(value["point"]):
                 continue
-            projected = self.project_point(value["point"])
+            projected = project(value["point"])
             if projected is not None:
                 text_depth = None
                 if not value["draw_overlay"]:
@@ -3338,13 +3393,13 @@ class RetainedViewer:
                     (Point3D(low[0], high[1], low[2]), "Y", low[1], high[1]),
                     (Point3D(low[0], low[1], high[2]), "Z", low[2], high[2]),
                 )
-                projected_origin = self.project_point(origin)
+                projected_origin = project(origin)
                 if projected_origin is not None:
                     hud.text(projected_origin[:2],
                              f"({low[0]:g}, {low[1]:g}, {low[2]:g})",
                              "#1f2937", font=("Segoe UI", 8, ""), anchor="s")
                     for endpoint, axis_name, minimum, maximum in axes:
-                        projected = self.project_point(endpoint)
+                        projected = project(endpoint)
                         if projected is None:
                             continue
                         hud.line(projected_origin[:2], projected[:2], "#1f2937", width=1.5)
@@ -3357,7 +3412,7 @@ class RetainedViewer:
                         for tick in range(1, 5):
                             fraction = tick / 5.0
                             world_tick = origin + (endpoint - origin) * fraction
-                            screen_tick = self.project_point(world_tick)
+                            screen_tick = project(world_tick)
                             if screen_tick is None:
                                 continue
                             point = screen_tick[:2]
@@ -3466,14 +3521,17 @@ class RetainedViewer:
                 elif primitive.shape == "segment":
                     if primitive.item in mesh_line_items:
                         continue
-                    hud.line(primitive.points[0], primitive.points[1], color, width=3.0)
+                    hud.line(logical(primitive.points[0]), logical(primitive.points[1]), color, width=3.0)
                 else:
-                    hud.circle(primitive.points[0], max(5.0, primitive.radius + 2), color, width=2.0)
+                    hud.circle(logical(primitive.points[0]), max(5.0, primitive.radius / ratio + 2), color, width=2.0)
 
         if self._selection_dragging and self._selection_press and self._selection_current:
-            start, current = self._selection_press, self._selection_current
+            start, current = logical(self._selection_press), logical(self._selection_current)
             if self._selection_config.tool is SelectionTool.LASSO:
-                hud.polyline(tuple((*self._selection_points, current)), "#2563eb", width=2.0)
+                hud.polyline(
+                    tuple((*(logical(point) for point in self._selection_points), current)),
+                    "#2563eb", width=2.0,
+                )
             else:
                 crossing = bool(self._selection_config.directional and current[0] < start[0])
                 color = "#16a34a" if crossing else "#2563eb"

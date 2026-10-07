@@ -1053,6 +1053,9 @@ class ModernGLRenderer:
             (1, 1), 3, np.zeros(3, dtype=np.float32).tobytes(), dtype="f4"
         )
         self._empty_face_color.use(location=5)
+        # Device pixels per logical pixel; line widths and point sizes are
+        # specified in logical pixels.
+        self.pixel_ratio = 1.0
         self._msaa_targets = None
         self._msaa_program = None
         self._msaa_vao = None
@@ -2212,7 +2215,8 @@ class ModernGLRenderer:
                     self.line_program, "u_opacity", group.opacity
                 )
                 self._set_uniform_value(
-                    self.line_program, "u_half_width", group.line_width * 0.5
+                    self.line_program, "u_half_width",
+                    group.line_width * 0.5 * self.pixel_ratio,
                 )
                 chunk.line_render_vao.render(
                     mode=moderngl.TRIANGLE_STRIP,
@@ -2257,7 +2261,8 @@ class ModernGLRenderer:
                     self.point_program, "u_opacity", group.opacity
                 )
                 self._set_uniform_value(
-                    self.point_program, "u_point_size", group.point_size
+                    self.point_program, "u_point_size",
+                    group.point_size * self.pixel_ratio,
                 )
                 chunk.point_render_vao.render(mode=moderngl.POINTS)
                 self.draw_calls += 1
@@ -2429,7 +2434,7 @@ class ModernGLRenderer:
                     self._set_uniform_value(
                         self.line_pick_program,
                         "u_half_width",
-                        max(2.5, group.line_width * 0.5),
+                        max(2.5, group.line_width * 0.5) * self.pixel_ratio,
                     )
                     self._set_uniform_value(
                         self.line_pick_program, "u_pick_base", base
@@ -2467,7 +2472,7 @@ class ModernGLRenderer:
                     self._set_uniform_value(
                         self.point_pick_program,
                         "u_point_size",
-                        max(7.0, group.point_size),
+                        max(7.0, group.point_size) * self.pixel_ratio,
                     )
                     self._set_uniform_value(
                         self.point_pick_program, "u_pick_base", base

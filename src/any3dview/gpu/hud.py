@@ -238,11 +238,21 @@ class GPUHudRenderer:
         )
         self.atlas = _TextAtlas(context)
         self.viewport = (1, 1)
+        self.scale = 1.0
         self.vertices: list[tuple[float, ...]] = []
         self.depth_vertices: list[tuple[float, ...]] = []
         self.uploads = 0
 
-    def begin(self, viewport: tuple[int, int]) -> None:
+    def begin(self, viewport: tuple[int, int], scale: float = 1.0) -> None:
+        """Start a frame.
+
+        ``viewport`` is the framebuffer size in device pixels.  Drawing calls
+        take *logical* pixels (device pixels divided by ``scale``) so a layout
+        written for a 96 dpi display keeps its proportions on a HiDPI one;
+        sizes, widths and font sizes are scaled to device pixels here.
+        """
+
+        self.scale = max(0.25, float(scale))
         self.viewport = max(1, int(viewport[0])), max(1, int(viewport[1]))
         self.vertices.clear()
         self.depth_vertices.clear()
@@ -280,6 +290,21 @@ class GPUHudRenderer:
         uv: Optional[tuple[float, float, float, float]] = None,
         depth: Optional[float] = None,
     ) -> None:
+        scale = self.scale
+        self._quad_device(
+            tuple(float(value) * scale for value in rect), color,
+            alpha=alpha, uv=uv, depth=depth,
+        )
+
+    def _quad_device(
+        self,
+        rect: tuple[float, float, float, float],
+        color: object,
+        *,
+        alpha: float = 1.0,
+        uv: Optional[tuple[float, float, float, float]] = None,
+        depth: Optional[float] = None,
+    ) -> None:
         x0, y0, x1, y1 = (float(value) for value in rect)
         if uv is None:
             white = self.atlas.white_uv
@@ -306,11 +331,12 @@ class GPUHudRenderer:
         alpha: float = 1.0,
         depth: Optional[float] = None,
     ) -> None:
-        x0, y0 = start
-        x1, y1 = end
+        scale = self.scale
+        x0, y0 = start[0] * scale, start[1] * scale
+        x1, y1 = end[0] * scale, end[1] * scale
         dx, dy = x1 - x0, y1 - y0
         length = max(1.0e-9, math.hypot(dx, dy))
-        half = max(0.5, float(width) * 0.5)
+        half = max(0.5, float(width) * scale * 0.5)
         nx, ny = -dy * half / length, dx * half / length
         rgba = _rgba(color, alpha)
         uv = self.atlas.white_uv
@@ -387,8 +413,13 @@ class GPUHudRenderer:
         anchor: str = "center",
         depth: Optional[float] = None,
     ) -> None:
+        scale = self.scale
+        if scale != 1.0:
+            values = tuple(font) if isinstance(font, (tuple, list)) else (str(font), 9, "")
+            size = max(6, int(values[1])) if len(values) > 1 else 9
+            font = (values[0], max(6, round(size * scale)), *(values[2:3] or ("",)))
         entry = self.atlas.text(value, font)
-        x, y = float(point[0]), float(point[1])
+        x, y = float(point[0]) * scale, float(point[1]) * scale
         normalized = str(anchor).casefold()
         if "e" in normalized and normalized != "center":
             x -= entry.width
@@ -398,7 +429,7 @@ class GPUHudRenderer:
             y -= entry.height
         elif "n" not in normalized:
             y -= 0.5 * entry.height
-        self.quad(
+        self._quad_device(
             (x, y, x + entry.width, y + entry.height), color,
             uv=entry.uv, depth=depth,
         )

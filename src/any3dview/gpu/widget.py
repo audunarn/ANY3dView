@@ -309,6 +309,7 @@ class Any3DView(RetainedViewer, ttk.Frame):
         except ImportError as error:  # pragma: no cover - malformed optional install
             raise RuntimeError("capture_image requires Pillow from ANY3dView[gpu]") from error
         self._host.make_current()
+        self._sync_pixel_ratio()
         width, height = self.viewport_size
         self._renderer.render(
             self.camera, (width, height), section_plane=self._section_plane,
@@ -331,10 +332,17 @@ class Any3DView(RetainedViewer, ttk.Frame):
         return image
 
 
+    def _native_pixel_ratio(self) -> float:
+        try:
+            return float(self._host.surface.winfo_fpixels("1i")) / 96.0
+        except Exception:
+            return 1.0
+
     def _draw_now(self) -> None:
         if self._closed:
             return
         self._host.make_current()
+        self._sync_pixel_ratio()
         size = self._host.framebuffer_size()
         color = parse_color(self.bg) or (255, 255, 255)
         clear = tuple(channel / 255.0 for channel in color) + (1.0,)

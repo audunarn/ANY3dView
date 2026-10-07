@@ -84,19 +84,21 @@ class _SoftwareResources:
 class _PainterHud:
     """Painter implementation of the same overlay operations as the GPU HUD."""
     uploads = 0
-    def __init__(self):self.painter=None
-    def begin(self,viewport):self.uploads+=1
+    def __init__(self):self.painter=None;self.scale=1.0
+    def begin(self,viewport,scale=1.0):self.uploads+=1;self.scale=float(scale)
     def render(self,target=None):pass
     def release(self):self.painter=None
     def quad(self,rect,color,alpha=1,**options):
         fill=QColor(color);fill.setAlphaF(alpha)
         self.painter.setPen(Qt.NoPen);self.painter.setBrush(fill)
-        x0,y0,x1,y1=rect
+        s=self.scale
+        x0,y0,x1,y1=(value*s for value in rect)
         from PySide6.QtCore import QRectF
         self.painter.drawRect(QRectF(x0,y0,x1-x0,y1-y0))
     def line(self,start,end,color,width=1,**options):
-        self.painter.setPen(QPen(QColor(color),width));self.painter.setBrush(Qt.NoBrush)
-        self.painter.drawLine(QPointF(*start),QPointF(*end))
+        s=self.scale
+        self.painter.setPen(QPen(QColor(color),width*s));self.painter.setBrush(Qt.NoBrush)
+        self.painter.drawLine(QPointF(start[0]*s,start[1]*s),QPointF(end[0]*s,end[1]*s))
     def polyline(self,points,color,width=1,closed=False,**options):
         for a,b in zip(points,points[1:]):self.line(a,b,color,width)
         if closed and points:self.line(points[-1],points[0],color,width)
@@ -105,12 +107,14 @@ class _PainterHud:
         x0,y0,x1,y1=rect
         self.polyline(((x0,y0),(x1,y0),(x1,y1),(x0,y1)),color,width,True)
     def circle(self,point,radius,color,width=1,**options):
-        self.painter.setPen(QPen(QColor(color),width));self.painter.setBrush(Qt.NoBrush)
-        self.painter.drawEllipse(QPointF(*point),radius,radius)
+        s=self.scale
+        self.painter.setPen(QPen(QColor(color),width*s));self.painter.setBrush(Qt.NoBrush)
+        self.painter.drawEllipse(QPointF(point[0]*s,point[1]*s),radius*s,radius*s)
     def text(self,point,text,color,font=("Segoe UI",10,""),anchor="nw",**options):
-        qfont=QFont(font[0],font[1]);qfont.setBold("bold" in font[2])
+        s=self.scale
+        qfont=QFont(font[0],max(1,round(font[1]*s)));qfont.setBold("bold" in font[2])
         self.painter.setFont(qfont);self.painter.setPen(QColor(color))
-        metrics=self.painter.fontMetrics();x,y=point
+        metrics=self.painter.fontMetrics();x,y=point[0]*s,point[1]*s
         if "e" in anchor:x-=metrics.horizontalAdvance(str(text))
         elif "w" not in anchor:x-=metrics.horizontalAdvance(str(text))/2
         if "n" in anchor:y+=metrics.ascent()
@@ -228,6 +232,7 @@ class _GLSurface(_InputSurface, QOpenGLWidget):
         try:
             owner = self.owner
             renderer = owner._renderer
+            owner._sync_pixel_ratio()
             target = renderer.ctx.detect_framebuffer(self.defaultFramebufferObject())
             renderer.render(owner.camera, owner.viewport_size,
                             target=target, section_plane=owner._section_plane,
@@ -303,6 +308,9 @@ class QtViewer(RetainedViewer, QWidget):
         timer.stop()
         self._timers.discard(timer)
         timer.deleteLater()
+
+    def _native_pixel_ratio(self):
+        return float(self.surface.devicePixelRatioF())
 
     def framebuffer_size(self):
         ratio = self.surface.devicePixelRatioF()
@@ -510,16 +518,16 @@ class QtViewer(RetainedViewer, QWidget):
             else:
                 painter.setRenderHint(QPainter.Antialiasing, True)
                 painter.setBrush(Qt.NoBrush)
-                painter.setPen(QPen(QColor(appearance["line_color"]), appearance["line_width"]))
+                painter.setPen(QPen(QColor(appearance["line_color"]), appearance["line_width"]*self.pixel_ratio))
                 painter.drawPolyline(polygon)
         painter.setRenderHint(QPainter.Antialiasing, True)
         for a,b,appearance in lines:
-            painter.setPen(QPen(QColor(appearance["line_color"]),appearance["line_width"]))
+            painter.setPen(QPen(QColor(appearance["line_color"]),appearance["line_width"]*self.pixel_ratio))
             painter.drawLine(QPointF(*a[:2]),QPointF(*b[:2]))
         for p,appearance in points:
             painter.setBrush(QColor(appearance["point_color"]))
             painter.setPen(Qt.NoPen)
-            r=appearance["point_size"]/2
+            r=appearance["point_size"]*self.pixel_ratio/2
             painter.drawEllipse(QPointF(*p[:2]),r,r)
         self._hud.painter=painter
         self._render_hud(self.viewport_size)

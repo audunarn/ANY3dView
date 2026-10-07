@@ -1594,8 +1594,16 @@ class RetainedViewer:
         y: int,
         selection_filter: SelectionFilter,
         radius: int = 0,
+        *,
+        peel_fallback: bool = True,
     ) -> Optional[tuple[SelectionHit, ...]]:
-        """Resolve the front pixel from the cached integer ID/depth target."""
+        """Resolve the front pixel from the cached integer ID/depth target.
+
+        When the front owner is rejected by the filter and nothing eligible
+        remains in the ID target, ``None`` asks the caller to peel the depth
+        stack on the CPU.  Callers that cannot afford a Python projection of
+        the whole scene pass ``peel_fallback=False`` and receive ``()``.
+        """
 
         renderer = getattr(self, "_renderer", None)
         host = getattr(self, "_host", None)
@@ -1621,7 +1629,7 @@ class RetainedViewer:
                 # same-class primitive behind it. The ID target cannot peel
                 # that depth stack, so signal the caller's CPU through-index
                 # fallback only for this explicitly filtered edge case.
-                return None if filtered_front else ()
+                return None if (filtered_front and peel_fallback) else ()
             if len(picked) == 4:
                 handle, primitive_kind, primitive, chunk_id = picked
             else:  # compatibility with 0.4 renderer doubles
@@ -1651,7 +1659,7 @@ class RetainedViewer:
             filtered_front = True
             remaining_kinds.discard(primitive_kind)
         if not owners:
-            return None if filtered_front else ()
+            return None if (filtered_front and peel_fallback) else ()
         self._cache_hit_elements(
             handle,
             entry,
@@ -1731,16 +1739,27 @@ class RetainedViewer:
         effective_radius = (
             policy.click_radius_px if radius is None else max(0, int(radius))
         )
-        gpu_hits = self._gpu_point_hits(
-            int(x), int(y), active_filter, effective_radius
-        )
-        if policy.depth is SelectionDepth.VISIBLE and (
+        gpu_only = policy.depth is SelectionDepth.VISIBLE and (
             front_only
             or self._display_primitive_count(_CPU_POINT_STACK_LIMIT)
             > _CPU_POINT_STACK_LIMIT
-        ):
+        )
+        if gpu_only:
+            # Rebuilding the projected index costs about 25 microseconds per
+            # primitive after every camera change (1.6 s for the 97k primitive
+            # barge).  A filtered front surface with nothing eligible visible
+            # behind it is simply "no hit" here; only an unavailable ID
+            # backend still falls through to the CPU index.
+            gpu_hits = self._gpu_point_hits(
+                int(x), int(y), active_filter, effective_radius,
+                peel_fallback=False,
+            )
             if gpu_hits is not None:
                 return gpu_hits
+        else:
+            gpu_hits = self._gpu_point_hits(
+                int(x), int(y), active_filter, effective_radius
+            )
         hits = self._projected_selection_index().point_hits(
             x, y, active_filter,
             radius=effective_radius,

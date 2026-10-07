@@ -410,6 +410,29 @@ def _matrix_bytes(matrix: np.ndarray) -> bytes:
     return np.asarray(matrix, dtype=np.float32).T.tobytes()
 
 
+_PROGRAM_NAMES: dict[int, tuple[Any, frozenset[str]]] = {}
+
+
+def _has_uniform(program: Any, name: str) -> bool:
+    """Membership test that does not iterate every program member each call.
+
+    ``name in program`` falls back to iterating all uniforms and attributes;
+    done several times per draw call it dominated scenes with many meshes.  A
+    linked program's members never change, so remember them per program.
+    """
+
+    entry = _PROGRAM_NAMES.get(id(program))
+    if entry is None or entry[0] is not program:
+        try:
+            names = frozenset(program)
+        except TypeError:  # test doubles that only implement ``in``
+            return name in program
+        if len(_PROGRAM_NAMES) >= 64:  # renderers are recreated rarely
+            _PROGRAM_NAMES.clear()
+        entry = _PROGRAM_NAMES[id(program)] = (program, names)
+    return name in entry[1]
+
+
 @lru_cache(maxsize=256)
 def _rgb(color: str) -> tuple[float, float, float]:
     parsed = parse_color(color) or (154, 167, 180)
@@ -814,7 +837,7 @@ class _Chunk:
         self.scalars.use(location=3)
         self.colormap.use(location=4)
         self.semantic_elements.use(location=6)
-        if self.has_face_colors and "u_face_colors" in program:
+        if self.has_face_colors and _has_uniform(program, "u_face_colors"):
             self.face_colors.use(location=5)
         for name, value in (
             ("u_triangle_to_element", 0),
@@ -828,7 +851,7 @@ class _Chunk:
             ("u_triangle_width", self.triangle_width),
             ("u_element_width", self.element_width),
         ):
-            if name in program:
+            if _has_uniform(program, name):
                 if set_uniform is None:
                     program[name].value = value
                 else:
@@ -840,7 +863,7 @@ class _Chunk:
             ("u_semantic_lines", 6),
             ("u_line_width", self.line_semantic_width),
         ):
-            if name in program:
+            if _has_uniform(program, name):
                 if set_uniform is None:
                     program[name].value = value
                 else:
@@ -852,7 +875,7 @@ class _Chunk:
             ("u_semantic_points", 6),
             ("u_point_width", self.point_semantic_width),
         ):
-            if name in program:
+            if _has_uniform(program, name):
                 if set_uniform is None:
                     program[name].value = value
                 else:
@@ -955,6 +978,7 @@ class ModernGLRenderer:
             tuple[int, int, MeshHandle, str, object]
         ] = []
         self._uniform_value_cache: dict[tuple[int, str], object] = {}
+        self._frame_stamp: dict[int, _CameraFrame] = {}
         self._world_bounds_cache: dict[int, tuple[int, np.ndarray, float]] = {}
         self.pick_dirty = True
         self.draw_calls = 0
@@ -1615,20 +1639,25 @@ class ModernGLRenderer:
     ) -> None:
         transform = chunk.handle.transform
         transformed_origin = transform[:3, :3] @ chunk.origin + transform[:3, 3]
-        program["u_view_rotation"].write(_matrix_bytes(frame.view))
-        program["u_projection"].write(_matrix_bytes(frame.projection))
+        if self._frame_stamp.get(id(program)) is not frame:
+            # Camera, viewport and section state are identical for every chunk
+            # of one frame; write them once per program, not once per chunk.
+            # The stamp holds the frame object itself so its id cannot recur.
+            program["u_view_rotation"].write(_matrix_bytes(frame.view))
+            program["u_projection"].write(_matrix_bytes(frame.projection))
+            if _has_uniform(program, "u_viewport"):
+                program["u_viewport"].value = tuple(float(value) for value in frame.viewport)
+            if _has_uniform(program, "u_near"):
+                program["u_near"].value = frame.near
+            program["u_section_enabled"].value = frame.section_enabled
+            program["u_section_normal"].value = frame.section_normal
+            program["u_section_relative_offset"].value = frame.section_relative_offset
+            self._frame_stamp[id(program)] = frame
         program["u_linear"].write(_matrix_bytes(transform[:3, :3]))
         program["u_origin_from_camera"].value = tuple(
             np.asarray(transformed_origin - frame.position, dtype=np.float32)
         )
         program["u_deformation_scale"].value = chunk.handle.deformation_scale
-        if "u_viewport" in program:
-            program["u_viewport"].value = tuple(float(value) for value in frame.viewport)
-        if "u_near" in program:
-            program["u_near"].value = frame.near
-        program["u_section_enabled"].value = frame.section_enabled
-        program["u_section_normal"].value = frame.section_normal
-        program["u_section_relative_offset"].value = frame.section_relative_offset
 
     def render(
         self,

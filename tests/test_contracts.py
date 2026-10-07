@@ -280,8 +280,9 @@ def test_gpu_large_visible_query_stays_on_cached_integer_pick_path(monkeypatch):
     monkeypatch.setattr(
         viewer,
         "_gpu_point_hits",
-        lambda x, y, selection_filter, radius=0: (
-            calls.append((x, y, radius)) or expected
+        lambda x, y, selection_filter, radius=0, **kwargs: (
+            calls.append((x, y, radius, kwargs.get("peel_fallback", True)))
+            or expected
         ),
     )
     monkeypatch.setattr(viewer, "_display_primitive_count", lambda _limit: 1_000_000)
@@ -292,7 +293,8 @@ def test_gpu_large_visible_query_stays_on_cached_integer_pick_path(monkeypatch):
     )
 
     assert viewer.query_point(13, 17) == expected
-    assert calls == [(13, 17, 9)]
+    # A large visible-depth query must not ask for the CPU depth-stack peel.
+    assert calls == [(13, 17, 9, False)]
 
 
 def test_gpu_large_visible_query_falls_back_if_id_backend_is_unavailable(monkeypatch):
@@ -1034,3 +1036,114 @@ def test_gpu_hover_requests_front_hit_only_without_a_legacy_prefix(
     viewer._hover_select(type("Event", (), {"x": 3, "y": 4})())
 
     assert requests == [{"front_only": expected_front_only}]
+
+
+def _filtered_front_viewer(monkeypatch, *, primitives):
+    """Front pixel is a face; the selection filter accepts only vertices."""
+
+    import numpy as np
+    from any3dview import (
+        Camera3D, MeshArrays, MeshHandle, PackedOwnerTable, PickBinding,
+        SelectionConfig, SelectionFilter,
+    )
+    from any3dview.gpu import Any3DView
+
+    handle = MeshHandle(
+        MeshArrays(
+            np.asarray([[0, 0, 0], [1, 0, 0], [0, 1, 0]], np.float32),
+            np.asarray([[0, 1, 2]], np.uint32),
+        )
+    )
+    picks = []
+
+    class Renderer:
+        @staticmethod
+        def pick(*_args, **_kwargs):  # presence marks the ID backend available
+            raise AssertionError("pick_detail is preferred")
+
+        @staticmethod
+        def pick_detail(*_args, primitive_kinds=(), **_kwargs):
+            picks.append(tuple(primitive_kinds))
+            if "triangle" in primitive_kinds:
+                return handle, "triangle", 0, None
+            return None
+
+    class Host:
+        @staticmethod
+        def make_current():
+            return None
+
+        @staticmethod
+        def framebuffer_size():
+            return 64, 64
+
+    viewer = Any3DView.__new__(Any3DView)
+    viewer.camera = Camera3D()
+    viewer._host = Host()
+    viewer._renderer = Renderer()
+    viewer._animation_frame_active = False
+    viewer._entries = {
+        id(handle): {
+            "handle": handle,
+            "owners": PackedOwnerTable.from_owners(
+                triangles=[PickBinding.one("face:1", "geometry.face")]
+            ),
+            "owner_resolver": None,
+            "appearance": {"pickable": True},
+            "tags": frozenset(),
+            "item": 1,
+            "chunk_semantics": {},
+        }
+    }
+    viewer._section_plane = None
+    viewer.show_mesh_lines = True
+    viewer._occlude_lines = True
+    viewer._selection_config = SelectionConfig(
+        filter=SelectionFilter(kinds=frozenset({"geometry.vertex"}))
+    )
+    monkeypatch.setattr(viewer, "_display_primitive_count", lambda _limit: primitives)
+    return viewer, picks
+
+
+def test_gpu_hits_report_cpu_peel_only_when_the_caller_allows_it(monkeypatch):
+    pytest.importorskip("moderngl")
+    viewer, _picks = _filtered_front_viewer(monkeypatch, primitives=10)
+    vertex_filter = viewer._selection_config.filter
+
+    assert viewer._gpu_point_hits(32, 32, vertex_filter) is None
+    assert viewer._gpu_point_hits(32, 32, vertex_filter, peel_fallback=False) == ()
+
+
+@pytest.mark.parametrize(
+    "primitives, kwargs",
+    [(1_000_000, {}), (10, {"front_only": True})],
+)
+def test_filtered_front_surface_is_no_hit_without_a_cpu_projection(
+    monkeypatch, primitives, kwargs
+):
+    pytest.importorskip("moderngl")
+    viewer, _picks = _filtered_front_viewer(monkeypatch, primitives=primitives)
+    monkeypatch.setattr(
+        viewer,
+        "_projected_selection_index",
+        lambda: (_ for _ in ()).throw(AssertionError("CPU index must stay cold")),
+    )
+
+    assert viewer.query_point(32, 32, **kwargs) == ()
+
+
+def test_small_scene_click_on_filtered_surface_still_peels_on_the_cpu(monkeypatch):
+    pytest.importorskip("moderngl")
+    from any3dview import PickOwner, SelectionHit
+
+    viewer, _picks = _filtered_front_viewer(monkeypatch, primitives=10)
+    behind = SelectionHit(PickOwner("vertex:3", "geometry.vertex"), primitive=2, depth=2.0)
+
+    class Index:
+        @staticmethod
+        def point_hits(*_args, **_kwargs):
+            return (behind,)
+
+    monkeypatch.setattr(viewer, "_projected_selection_index", lambda: Index())
+
+    assert viewer.query_point(32, 32) == (behind,)

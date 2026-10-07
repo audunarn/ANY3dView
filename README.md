@@ -197,6 +197,35 @@ context. Set `ANY3DVIEW_GL_PROFILE=legacy` before creating the viewer only when
 using Windows hardware limited to OpenGL 3.3/4.0. ModernGL remains the final
 version gate, and unsupported contexts fail with an actionable diagnostic.
 
+### Visual quality
+
+Translucent surfaces, lines and points use weighted-blended order-independent
+transparency (no sorting, no screen-door dither); round-joined thick polylines
+keep one uniform alpha at joints; points are analytically antialiased discs.
+Opaque geometry is multisampled: Qt hosts request samples through
+`QSurfaceFormat`, Tk hosts through an internal framebuffer that is resolved
+into the window. On HiDPI displays `viewer.pixel_ratio` scales line widths,
+point sizes, overlay text and the default pick radius; an explicit
+`query_point(..., radius=)` stays in device pixels.
+
+| Variable | Effect |
+| --- | --- |
+| `ANY3DVIEW_MSAA` | Sample count (`0` disables; default 4, reduced to what the driver offers). |
+| `ANY3DVIEW_OIT=0` | Use sorted alpha blending instead of order-independent transparency. |
+| `ANY3DVIEW_PIXEL_RATIO` | Override the detected device pixel ratio (for example `2`). |
+| `ANY3DVIEW_ROUND_JOINS=0` | Draw thick polylines as plain segment strips (notches at sharp corners). |
+
+Features the driver cannot provide (float render targets, multisampled
+renderbuffers) are never dropped silently: the viewer keeps rendering with the
+fallback and lists the reason in `viewer.backend_diagnostics`.
+
+Display meshes drawn flat by default can be smoothed per call with a crease
+angle: `viewer.add_faces(..., smooth_angle=35.0)`. Edges sharper than the angle
+stay hard, so boxes and plate junctions keep their corners. Producers can also
+supply `MeshArrays.normals` (one unit normal per vertex); `ViewerCapabilities.
+smooth_normals` reports support. Finite element meshes should stay flat so each
+element remains distinguishable.
+
 `ViewerBackend`, `ViewerCapabilities`, `Pick` and `ViewerState` describe the
 shared integration boundary. Applications can switch renderers
 transactionally by populating a candidate and copying the view policy:

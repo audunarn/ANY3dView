@@ -378,8 +378,8 @@ void main() {
         int outline = 2 * (u_cap_segments + 1);
         int index = (gl_VertexID - 1) % outline;   // the closing vertex wraps to 0
         at_end = index > u_cap_segments;
-        int step = at_end ? index - (u_cap_segments + 1) : index;
-        float theta = 3.14159265 * float(step) / float(u_cap_segments);
+        int cap_index = at_end ? index - (u_cap_segments + 1) : index;
+        float theta = 3.14159265 * float(cap_index) / float(u_cap_segments);
         // Start cap sweeps +normal -> -direction -> -normal; the end cap
         // continues -normal -> +direction -> +normal.
         vec2 around = at_end
@@ -1169,6 +1169,7 @@ class ModernGLRenderer:
         # Device pixels per logical pixel; line widths and point sizes are
         # specified in logical pixels.
         self.pixel_ratio = 1.0
+        self._diagnostics: list[str] = []
         self._msaa_targets = None
         self._msaa_program = None
         self._msaa_vao = None
@@ -1886,8 +1887,13 @@ class ModernGLRenderer:
         *,
         oit: bool = False,
         oit_depth_range: tuple[float, float] = (0.0, 1.0),
+        depth_only: bool = False,
     ) -> None:
-        """Bind the surface program's per-chunk state (shared by every pass)."""
+        """Bind the surface program's per-chunk state (shared by every pass).
+
+        Every OIT-related uniform is written on every call, so an aborted pass
+        can never leave a stale ``u_oit_depth_only`` behind for the next one.
+        """
 
         self._uniforms(self.render_program, chunk, frame)
         chunk.bind_fields(self.render_program, self._set_uniform_value)
@@ -1984,10 +1990,59 @@ class ModernGLRenderer:
             group.scalar_range or chunk.scalar_range,
         )
         self._set_uniform_value(self.render_program, "u_oit", oit)
+        self._set_uniform_value(self.render_program, "u_oit_depth_only", depth_only)
         self._set_uniform_value(
             self.render_program, "u_oit_depth_range", oit_depth_range
         )
 
+
+    def _recover_after_failed_pass(self, framebuffer: Any, viewport: tuple[int, int]) -> None:
+        """Best-effort restore of GL and cached uniform state after an aborted pass.
+
+        Cached uniform values are dropped before being rewritten, because the
+        failure may have left the cache saying one thing and the program
+        another.  Nothing here may raise: it runs inside an error handler.
+        """
+
+        ctx = self.ctx
+        steps = (
+            lambda: setattr(ctx, "blend_equation", moderngl.FUNC_ADD),
+            lambda: ctx.disable(moderngl.BLEND),
+            lambda: setattr(framebuffer, "depth_mask", True),
+            lambda: setattr(framebuffer, "color_mask", (True, True, True, True)),
+            framebuffer.use,
+            lambda: setattr(ctx, "viewport", (0, 0, int(viewport[0]), int(viewport[1]))),
+            lambda: ctx.enable(moderngl.DEPTH_TEST | moderngl.CULL_FACE),
+            lambda: setattr(ctx, "depth_func", "<="),
+        )
+        for step in steps:
+            try:
+                step()
+            except Exception:
+                pass
+        for program, names in (
+            (self.render_program, (("u_oit", False), ("u_oit_depth_only", False), ("u_depth_bias", 0.0))),
+            (self.line_program, (("u_oit", False), ("u_oit_depth_only", False), ("u_cap_segments", 0))),
+            (self.point_program, (("u_oit", False), ("u_oit_depth_only", False))),
+        ):
+            for name, value in names:
+                self._uniform_value_cache.pop((id(program), name), None)
+                try:
+                    self._set_uniform_value(program, name, value)
+                except Exception:
+                    pass
+
+    @property
+    def diagnostics(self) -> tuple[str, ...]:
+        """Quality features this renderer had to give up, and why."""
+
+        return tuple(self._diagnostics)
+
+    def _diagnose(self, message: str) -> None:
+        """Record (once) that a feature degraded, so the host can report it."""
+
+        if message not in self._diagnostics:
+            self._diagnostics.append(message)
 
     def _release_msaa(self) -> None:
         targets, self._msaa_targets = self._msaa_targets, None
@@ -2024,9 +2079,13 @@ class ModernGLRenderer:
                     fragment_shader=_MSAA_RESOLVE_FRAGMENT,
                 )
                 self._msaa_vao = self.ctx.vertex_array(self._msaa_program, [])
-        except Exception:
+        except Exception as error:
             # Remember the failure for this size so it is not retried per frame.
             self._msaa_targets = (size, samples, None)
+            self._diagnose(
+                f"multisampling unavailable at {samples}x ({type(error).__name__}: {error});"
+                " rendering without antialiasing"
+            )
             return None
         self._msaa_targets = (
             size, samples,
@@ -2052,14 +2111,16 @@ class ModernGLRenderer:
         ctx.viewport = (0, 0, size[0], size[1])
         ctx.disable(moderngl.BLEND | moderngl.CULL_FACE)
         ctx.enable(moderngl.DEPTH_TEST)
-        ctx.depth_func = "1"
         destination.depth_mask = True
         resolved_color.use(location=0)
         resolved_depth.use(location=1)
         self._set_uniform_value(self._msaa_program, "u_color", 0)
         self._set_uniform_value(self._msaa_program, "u_depth", 1)
-        self._msaa_vao.render(mode=moderngl.TRIANGLES, vertices=3)
-        ctx.depth_func = "<="
+        ctx.depth_func = "1"  # the pass writes the resolved depth unconditionally
+        try:
+            self._msaa_vao.render(mode=moderngl.TRIANGLES, vertices=3)
+        finally:
+            ctx.depth_func = "<="
 
     def _line_cap_segments(self, group: _Group) -> int:
         """Segments per round cap, or 0 for the butt-ended quad."""
@@ -2324,9 +2385,14 @@ class ModernGLRenderer:
                     layer_accum, layer_reveal, layer_framebuffer,
                 )
             return targets
-        except Exception:
+        except Exception as error:
             self._oit_failed = True
             self._release_oit_targets()
+            self._diagnose(
+                "order-independent transparency unavailable"
+                f" ({type(error).__name__}: {error}); translucent surfaces use"
+                " depth-sorted blending"
+            )
             return None
 
     def _render_oit(
@@ -2375,14 +2441,13 @@ class ModernGLRenderer:
         oit_fbo.depth_mask = True
         ctx.enable(moderngl.BLEND)
         ctx.blend_func = moderngl.ONE, moderngl.ONE
-        self._set_uniform_value(self.render_program, "u_oit_depth_only", True)
         for group, chunk in opaque_items:
             if chunk.mesh.triangle_count:
                 if not group.cull_backface:
                     ctx.disable(moderngl.CULL_FACE)
                 self._surface_uniforms(
                     group, chunk, frame, camera, light, shading_enabled,
-                    selection_color, preselection_color,
+                    selection_color, preselection_color, depth_only=True,
                 )
                 chunk.render_vao.render(mode=moderngl.TRIANGLES)
                 ctx.enable(moderngl.CULL_FACE)
@@ -2396,7 +2461,6 @@ class ModernGLRenderer:
                 depth_only=True,
             )
             ctx.enable(moderngl.CULL_FACE)
-        self._set_uniform_value(self.render_program, "u_oit_depth_only", False)
         oit_fbo.depth_mask = False  # translucent layers must not occlude each other
         self._set_uniform_value(self.render_program, "u_depth_bias", _OIT_DEPTH_BIAS)
         for group, chunk in items:
@@ -2482,6 +2546,7 @@ class ModernGLRenderer:
         framebuffer.color_mask = (True, True, True, True)
         framebuffer.use()
         self.ctx.viewport = (0, 0, int(viewport[0]), int(viewport[1]))
+        self.ctx.depth_func = "<="  # never inherit a stale function from an aborted frame
         framebuffer.clear(*clear_color, depth=1.0)
         self.ctx.enable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
         self.draw_calls = 0
@@ -2526,15 +2591,51 @@ class ModernGLRenderer:
         ]
         oit_ids: set[int] = set()
         oit_pending = bool(oit_items)
+        # Opaque points are drawn after every other opaque primitive.  Their
+        # antialiased rim writes depth at fractional coverage; drawn earlier it
+        # would hide farther geometry behind a ring of background.
+        deferred_points: list[tuple[_Group, _Chunk]] = []
+
+        def flush_points() -> None:
+            if not deferred_points:
+                return
+            framebuffer.depth_mask = True
+            self.ctx.enable(moderngl.DEPTH_TEST)
+            self.ctx.disable(moderngl.BLEND)
+            for point_group, point_chunk in deferred_points:
+                self._draw_points(
+                    point_group, point_chunk, frame, selection_color,
+                    preselection_color,
+                )
+            deferred_points.clear()
+            self.ctx.enable(moderngl.CULL_FACE)
+
         for group, chunk in ordered:
             is_transparent = group.opacity < 0.999
+            if is_transparent:
+                flush_points()
             if is_transparent and oit_pending:
                 oit_pending = False
-                if self._render_oit(
-                    framebuffer, viewport, frame, camera, light, shading_enabled,
-                    selection_color, preselection_color, opaque_items, oit_items,
-                    occlude_lines, show_mesh_lines,
-                ):
+                try:
+                    translucent_done = self._render_oit(
+                        framebuffer, viewport, frame, camera, light, shading_enabled,
+                        selection_color, preselection_color, opaque_items, oit_items,
+                        occlude_lines, show_mesh_lines,
+                    )
+                except Exception as error:
+                    # A driver error inside the pass must not take the viewer
+                    # down: report it, restore state and draw this frame's
+                    # translucent geometry with sorted blending instead.
+                    self._oit_failed = True
+                    self._release_oit_targets()
+                    self._diagnose(
+                        "order-independent transparency disabled after a render"
+                        f" error ({type(error).__name__}: {error}); translucent"
+                        " surfaces use depth-sorted blending"
+                    )
+                    self._recover_after_failed_pass(framebuffer, viewport)
+                    translucent_done = False
+                if translucent_done:
                     oit_ids = {id(item[1]) for item in oit_items}
             if is_transparent:
                 self.ctx.enable(moderngl.BLEND)
@@ -2561,14 +2662,18 @@ class ModernGLRenderer:
                     group, chunk, frame, selection_color, preselection_color,
                     occlude_lines, show_mesh_lines,
                 )
-                self._draw_points(
-                    group, chunk, frame, selection_color, preselection_color
-                )
+                if is_transparent:
+                    self._draw_points(
+                        group, chunk, frame, selection_color, preselection_color
+                    )
+                elif not group.depth_only and chunk.point_render_vao is not None:
+                    deferred_points.append((group, chunk))
             if not group.cull_backface or chunk.line_render_vao is not None or chunk.point_render_vao is not None:
                 self.ctx.enable(moderngl.CULL_FACE)
             if group.depth_only:
                 framebuffer.color_mask = (True, True, True, True)
                 framebuffer.use()
+        flush_points()
         framebuffer.depth_mask = True
         self.ctx.disable(moderngl.BLEND)
         if resolve_to is not None:

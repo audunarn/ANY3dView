@@ -238,3 +238,60 @@ def test_zero_normals_fall_back_to_flat_shading(renderer):
     values = shaded_row(renderer, np.zeros((3, 3), dtype=np.float32))
 
     assert values.max() - values.min() <= 2
+
+
+# ------------------------------------------------------ bounded cost at high valence
+def triangle_fan(valence):
+    angles = np.linspace(0.0, 2 * math.pi, valence, endpoint=False)
+    rim = np.column_stack((np.cos(angles), np.sin(angles), np.zeros(valence)))
+    positions = np.vstack(([0.0, 0.0, 1.0], rim))
+    triangles = np.asarray([[0, 1 + i, 1 + (i + 1) % valence] for i in range(valence)])
+    return positions, triangles
+
+
+def test_high_valence_hub_costs_bounded_memory_and_stays_flat():
+    import tracemalloc
+
+    from any3dview.normals import MAX_SMOOTHING_VALENCE
+
+    valence = 4096
+    assert valence > MAX_SMOOTHING_VALENCE
+    positions, triangles = triangle_fan(valence)
+
+    tracemalloc.start()
+    normals = smooth_corner_normals(positions, triangles, 35.0)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+
+    # All-pairs expansion needed about 2 GB here (valence squared); batching
+    # and the valence limit keep it to a few megabytes.
+    assert peak < 100e6
+    assert np.isfinite(normals).all()
+    hub = normals[:, 0]  # corner 0 of every triangle is the shared apex
+    assert np.allclose(hub, flat_normals(positions, triangles), atol=1.0e-5)
+
+
+def test_batching_does_not_change_the_result(monkeypatch):
+    import any3dview.normals as module
+
+    positions, triangles = facet_cylinder(24)
+    reference = smooth_corner_normals(positions, triangles, 30.0)
+
+    monkeypatch.setattr(module, "PAIR_BATCH", 40)  # force many small batches
+    batched = smooth_corner_normals(positions, triangles, 30.0)
+
+    assert np.allclose(batched, reference, atol=1.0e-6)
+
+
+def test_groups_above_the_valence_limit_keep_their_face_normals(monkeypatch):
+    import any3dview.normals as module
+
+    positions, triangles = facet_cylinder(16)
+    monkeypatch.setattr(module, "MAX_SMOOTHING_VALENCE", 1)  # every shared corner is over the limit
+
+    limited = smooth_corner_normals(positions, triangles, 30.0)
+    monkeypatch.setattr(module, "MAX_SMOOTHING_VALENCE", 256)
+    smoothed = smooth_corner_normals(positions, triangles, 30.0)
+
+    assert np.allclose(limited, flat_normals(positions, triangles)[:, None, :], atol=1.0e-5)
+    assert not np.allclose(smoothed, limited, atol=1.0e-3)

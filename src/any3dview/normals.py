@@ -13,6 +13,13 @@ from typing import Optional
 
 import numpy as np
 
+# Welded locations shared by more corners than this (a cone tip, the hub of a
+# triangle fan) are left flat: their faces meet at one point, so there is no
+# surface to smooth, and comparing every pair would cost valence squared.
+MAX_SMOOTHING_VALENCE = 256
+# Upper bound on corner pairs expanded at once (about 100 MB of temporaries).
+PAIR_BATCH = 2_000_000
+
 
 def _corner_angles(corners: np.ndarray) -> np.ndarray:
     """Interior angle at each corner of every triangle, shape (T, 3)."""
@@ -70,26 +77,38 @@ def smooth_corner_normals(
     sorted_weld = corner_weld[order]
     starts = np.flatnonzero(np.r_[True, sorted_weld[1:] != sorted_weld[:-1]])
     sizes = np.diff(np.r_[starts, len(order)])
-    group_of = np.repeat(np.arange(len(starts)), sizes)  # per sorted position
-    per_corner = sizes[group_of]                         # group size per sorted position
-    total = int(per_corner.sum())
-    first = np.repeat(np.arange(len(order)), per_corner)           # sorted position i
-    offset = np.arange(total) - np.repeat(np.cumsum(per_corner) - per_corner, per_corner)
-    second = np.repeat(starts[group_of], per_corner) + offset      # sorted position j
+    cosine_limit = np.cos(np.radians(max(0.0, float(crease_degrees))))
 
-    i_corner, j_corner = order[first], order[second]
-    face_i, face_j = corner_face[i_corner], corner_face[j_corner]
-    alignment = np.einsum("ij,ij->i", face[face_i], face[face_j])
-    keep = np.abs(alignment) >= np.cos(np.radians(max(0.0, float(crease_degrees))))
-    keep &= valid[face_i] & valid[face_j]
-    signed = np.where(alignment < 0.0, -1.0, 1.0) * weight[j_corner] * keep
-    contribution = face[face_j] * signed[:, None]
+    # Every corner is compared with the other corners at its welded location,
+    # so the work is the sum of (valence squared).  Groups above the valence
+    # limit (a cone tip, a fan hub) keep their face normals, and the rest are
+    # processed in batches so peak memory stays bounded.
+    eligible = sizes <= MAX_SMOOTHING_VALENCE
+    cost = np.where(eligible, sizes.astype(np.int64) ** 2, 0)
+    batch_of = (np.cumsum(cost) - cost) // PAIR_BATCH
+    accumulated = np.zeros((3 * count, 3), dtype=np.float64)
+    for batch in np.unique(batch_of[eligible]):
+        chosen = np.flatnonzero(eligible & (batch_of == batch))
+        group_start, group_size = starts[chosen], sizes[chosen]
+        corner_total = int(group_size.sum())
+        within = np.arange(corner_total) - np.repeat(np.cumsum(group_size) - group_size, group_size)
+        position = np.repeat(group_start, group_size) + within          # sorted position
+        per_corner = np.repeat(group_size, group_size)
+        total = int(per_corner.sum())
+        first = np.repeat(position, per_corner)
+        offset = np.arange(total) - np.repeat(np.cumsum(per_corner) - per_corner, per_corner)
+        second = np.repeat(np.repeat(group_start, group_size), per_corner) + offset
 
-    accumulated = np.stack(
-        [np.bincount(i_corner, weights=contribution[:, axis], minlength=3 * count)
-         for axis in range(3)],
-        axis=1,
-    )
+        i_corner, j_corner = order[first], order[second]
+        face_i, face_j = corner_face[i_corner], corner_face[j_corner]
+        alignment = np.einsum("ij,ij->i", face[face_i], face[face_j])
+        keep = (np.abs(alignment) >= cosine_limit) & valid[face_i] & valid[face_j]
+        signed = np.where(alignment < 0.0, -1.0, 1.0) * weight[j_corner] * keep
+        contribution = face[face_j] * signed[:, None]
+        for axis in range(3):
+            accumulated[:, axis] += np.bincount(
+                i_corner, weights=contribution[:, axis], minlength=3 * count
+            )
     length = np.linalg.norm(accumulated, axis=1)
     own = face[corner_face]
     smooth = np.where(length[:, None] > 1.0e-12, accumulated / np.maximum(length, 1.0e-30)[:, None], own)

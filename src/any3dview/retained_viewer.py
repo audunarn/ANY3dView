@@ -380,7 +380,17 @@ class RetainedViewer:
 
     @property
     def backend_diagnostics(self) -> tuple[str, ...]:
-        return self._backend_diagnostics
+        """Why this backend is not the one (or not as capable as the one) requested.
+
+        Includes quality features the renderer had to give up at run time, such
+        as order-independent transparency or multisampling, so a degradation is
+        reported rather than silent.
+        """
+
+        renderer_notes = getattr(getattr(self, "_renderer", None), "diagnostics", ())
+        return self._backend_diagnostics + tuple(
+            note for note in renderer_notes if note not in self._backend_diagnostics
+        )
 
 
     @property
@@ -1774,9 +1784,12 @@ class RetainedViewer:
 
         policy = config or self._selection_config
         active_filter = selection_filter or policy.filter
-        effective_radius = round(
-            self.pixel_ratio
-            * (policy.click_radius_px if radius is None else max(0, int(radius)))
+        # The policy default is in logical pixels and scales with the display;
+        # an explicitly passed radius is in device pixels, as it always was.
+        effective_radius = (
+            round(self.pixel_ratio * policy.click_radius_px)
+            if radius is None
+            else max(0, int(radius))
         )
         gpu_only = policy.depth is SelectionDepth.VISIBLE and (
             front_only

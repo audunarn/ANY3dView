@@ -30,6 +30,7 @@ class ViewerCapabilities:
     image_capture: bool = False
     line_occlusion: bool = False
     stippled_transparency: bool = False
+    smooth_normals: bool = False
     semantic_selection: bool = False
     semantic_visibility: bool = False
     viewer_commands: bool = False

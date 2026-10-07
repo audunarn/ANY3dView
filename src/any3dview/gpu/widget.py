@@ -89,6 +89,7 @@ GPU_CAPABILITIES = ViewerCapabilities(
     image_capture=True,
     line_occlusion=True,
     stippled_transparency=True,
+    smooth_normals=True,
     semantic_selection=True,
     semantic_visibility=True,
     viewer_commands=True,

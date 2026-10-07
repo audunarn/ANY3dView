@@ -36,13 +36,16 @@ uniform float u_depth_bias;
 in vec3 in_position;
 in vec3 in_displacement;
 in float in_node_scalar;
+in vec3 in_normal;
 out vec3 v_relative;
 out float v_node_scalar;
 out float v_depth;
+out vec3 v_normal;
 void main() {
     vec3 local = in_position + u_deformation_scale * in_displacement;
     v_relative = u_linear * local + u_origin_from_camera;
     v_node_scalar = in_node_scalar;
+    v_normal = u_linear * in_normal;
     v_depth = -(u_view_rotation * vec4(v_relative, 1.0)).z;
     gl_Position = u_projection * u_view_rotation * vec4(v_relative, 1.0);
     // Pull translucent surfaces marginally toward the camera so a shell lying
@@ -92,9 +95,11 @@ uniform sampler2D u_colormap;
 uniform bool u_oit;
 uniform bool u_oit_depth_only;
 uniform vec2 u_oit_depth_range;
+uniform bool u_has_normals;
 in vec3 v_relative;
 in float v_node_scalar;
 in float v_depth;
+in vec3 v_normal;
 layout(location = 0) out vec4 frag_color;
 layout(location = 1) out float frag_reveal;
 ivec2 address(uint index, uint width) {
@@ -140,10 +145,16 @@ void main() {
             base = texture(u_colormap, vec2(clamp((value - u_scalar_range.x) / span, 0.0, 1.0), 0.5)).rgb;
         }
     }
-    vec3 dx = dFdx(v_relative);
-    vec3 dy = dFdy(v_relative);
-    vec3 normal = normalize(cross(dx, dy));
-    if (!gl_FrontFacing) normal = -normal;
+    vec3 normal;
+    if (u_has_normals && dot(v_normal, v_normal) > 1.0e-12) {
+        // Supplied smooth normal, oriented with the triangle's winding.
+        normal = normalize(v_normal);
+    } else {
+        vec3 dx = dFdx(v_relative);
+        vec3 dy = dFdy(v_relative);
+        normal = normalize(cross(dx, dy));
+        if (!gl_FrontFacing) normal = -normal;
+    }
     vec3 light_direction = normalize(u_light_direction);
     float lambert = max(0.0, dot(normal, light_direction));
     float shade = u_shading_enabled
@@ -679,6 +690,8 @@ class _Chunk:
     has_scalars: bool
     node_scalars: bool
     scalar_range: tuple[float, float]
+    normal_buffer: Any = None
+    has_normals: bool = False
 
     @classmethod
     def create(
@@ -736,6 +749,12 @@ class _Chunk:
             *geometry_content,
             (node_scalar_buffer, "1f", "in_node_scalar"),
         ]
+        normal_buffer = None
+        if mesh.normals is not None and len(mesh.normals):
+            normal_buffer = ctx.buffer(
+                np.ascontiguousarray(mesh.normals, dtype=np.float32).tobytes()
+            )
+            render_content.append((normal_buffer, "3f", "in_normal"))
         render_vao = ctx.vertex_array(render_program, render_content, index_buffer)
         pick_vao = ctx.vertex_array(pick_program, geometry_content, index_buffer)
         line_buffer = None
@@ -868,6 +887,8 @@ class _Chunk:
             mesh.element_scalars is not None or mesh.node_scalars is not None,
             mesh.element_scalars is None and mesh.node_scalars is not None,
             scalar_range,
+            normal_buffer,
+            normal_buffer is not None,
         )
 
     @staticmethod
@@ -903,6 +924,7 @@ class _Chunk:
             self.point_index_buffer,
             self.vertex_buffer,
             self.node_scalar_buffer,
+            self.normal_buffer,
             self.index_buffer,
             self.triangle_map,
             self.active,
@@ -1850,6 +1872,9 @@ class ModernGLRenderer:
         )
         self._set_uniform_value(
             self.render_program, "u_stipple_rotation", stipple_rotation
+        )
+        self._set_uniform_value(
+            self.render_program, "u_has_normals", chunk.has_normals
         )
         self._set_uniform_value(
             self.render_program, "u_has_scalars", chunk.has_scalars

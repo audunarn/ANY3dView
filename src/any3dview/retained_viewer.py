@@ -74,6 +74,7 @@ GPU_CAPABILITIES = ViewerCapabilities(
     image_capture=True,
     line_occlusion=True,
     stippled_transparency=True,
+    smooth_normals=True,
     semantic_selection=True,
     semantic_visibility=True,
     viewer_commands=True,
@@ -2086,6 +2087,7 @@ class RetainedViewer:
         bindings: Optional[Sequence[Optional[PickBinding]]],
         back_color: str = "",
         face_colors: Optional[Sequence[str]] = None,
+        smooth_angle: Optional[float] = None,
     ) -> None:
         points = np.asarray([as_point(value).to_tuple() for value in vertices], np.float64)
         face_values = [tuple(int(index) for index in face) for face in faces]
@@ -2113,11 +2115,15 @@ class RetainedViewer:
         if not triangles and not edges:
             return
         lines = None if not edges else np.asarray(sorted(edges), np.uint32).reshape((-1, 2))
-        arrays = MeshArrays(
-            points,
-            np.asarray(triangles, np.uint32).reshape((-1, 3)),
-            lines=lines,
-        )
+        triangle_array = np.asarray(triangles, np.uint32).reshape((-1, 3))
+        normals = None
+        if smooth_angle is not None and len(triangle_array):
+            from .normals import expand_with_smooth_normals
+
+            points, triangle_array, normals, lines = expand_with_smooth_normals(
+                points, triangle_array, float(smooth_angle), lines
+            )
+        arrays = MeshArrays(points, triangle_array, lines=lines, normals=normals)
         owners = None
         if any(binding is not None for binding in triangle_bindings):
             owners = PackedOwnerTable.from_owners(
@@ -2232,7 +2238,16 @@ class RetainedViewer:
         lit: bool = True,
         two_sided_shell: bool = False,
         bindings: object = None,
+        smooth_angle: Optional[float] = None,
     ) -> None:
+        """Add polygons as retained triangle batches.
+
+        ``smooth_angle`` (degrees) shades neighbouring polygons with averaged
+        normals wherever their faces differ by no more than that crease angle,
+        so tessellated curved surfaces look curved while hard edges stay hard.
+        ``None`` keeps flat per-triangle shading.
+        """
+
         polygon_values = [list(polygon) for polygon in polygons]  # type: ignore[arg-type]
         total = len(polygon_values)
         if total == 0:
@@ -2270,6 +2285,7 @@ class RetainedViewer:
                     stipple=stipple, tags=tags, lit=lit,
                     two_sided_shell=two_sided_shell, bindings=binding_values,
                     back_color=back_values[0], face_colors=color_values,
+                    smooth_angle=smooth_angle,
                 )
             return
         groups: dict[tuple[str, str], list[int]] = {}
@@ -2290,7 +2306,7 @@ class RetainedViewer:
                 layer=layer, cull_backface=cull_backface, opacity=opacity,
                 stipple=stipple, tags=tags, lit=lit,
                 two_sided_shell=two_sided_shell, bindings=group_bindings,
-                back_color=back,
+                back_color=back, smooth_angle=smooth_angle,
             )
 
 

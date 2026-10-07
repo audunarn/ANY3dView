@@ -289,7 +289,7 @@ class QtViewer(RetainedViewer, QWidget):
             return GPU_CAPABILITIES
         return replace(GPU_CAPABILITIES, gpu=False, integer_picking=False,
                        shader_deformation=False, line_occlusion=False,
-                       stippled_transparency=False)
+                       stippled_transparency=False, smooth_normals=False)
 
     def after(self, delay, callback):
         timer = QTimer(self)

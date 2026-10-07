@@ -86,6 +86,9 @@ class MeshArrays:
     node_scalars: Optional[np.ndarray] = None
     element_scalars: Optional[np.ndarray] = None
     active_elements: Optional[np.ndarray] = None
+    # Optional unit normals, one per position, used for smooth shading instead
+    # of the per-triangle normal.  They describe the undeformed geometry.
+    normals: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
         positions = _float_array(self.positions, "positions", (None, 3))
@@ -140,6 +143,11 @@ class MeshArrays:
             if self.displacements is None
             else _float_array(self.displacements, "displacements", (node_count, 3))
         )
+        normals = (
+            None
+            if self.normals is None
+            else _float_array(self.normals, "normals", (node_count, 3))
+        )
         node_scalars = _optional_scalar(self.node_scalars, "node_scalars", node_count)
         element_scalars = _optional_scalar(
             self.element_scalars, "element_scalars", element_count
@@ -163,6 +171,7 @@ class MeshArrays:
             ("node_scalars", node_scalars),
             ("element_scalars", element_scalars),
             ("active_elements", active),
+            ("normals", normals),
         ):
             object.__setattr__(self, name, value)
 

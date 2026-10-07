@@ -54,6 +54,37 @@ void main() {
 }
 """
 
+# Shared by the surface, line and point fragment shaders.  In the weighted
+# blended OIT pass the colour target accumulates premultiplied colour and
+# weight, and the second target accumulates -log(1 - alpha) so that
+# exp(-sum) is the exact product of the layers' transmittances without a
+# separate blend mode.  ``u_oit_depth_only`` replays opaque geometry for depth
+# only (colour masks do not cover both attachments) by writing zeros.
+_OIT_EMIT_GLSL = """
+uniform bool u_oit;
+uniform bool u_oit_depth_only;
+uniform vec2 u_oit_depth_range;
+layout(location = 0) out vec4 frag_color;
+layout(location = 1) out float frag_reveal;
+void emit_color(vec3 rgb, float alpha, float view_depth) {
+    if (u_oit_depth_only) {
+        frag_color = vec4(0.0);
+        frag_reveal = 0.0;
+    } else if (u_oit) {
+        float span = max(1.0e-6, u_oit_depth_range.y - u_oit_depth_range.x);
+        float nearness = 1.0 - clamp((view_depth - u_oit_depth_range.x) / span, 0.0, 1.0);
+        float weight = 1.0 + 3.0 * nearness;
+        float covered = min(alpha, 0.999);
+        frag_color = vec4(rgb * covered * weight, covered * weight);
+        frag_reveal = -log(1.0 - covered);
+    } else {
+        frag_color = vec4(rgb, alpha);
+        frag_reveal = 0.0;
+    }
+}
+"""
+
+
 _FRAGMENT = """
 #version 330
 uniform vec3 u_color;
@@ -92,16 +123,12 @@ uniform usampler2D u_selected_elements;
 uniform usampler2D u_semantic_elements;
 uniform sampler2D u_element_scalars;
 uniform sampler2D u_colormap;
-uniform bool u_oit;
-uniform bool u_oit_depth_only;
-uniform vec2 u_oit_depth_range;
 uniform bool u_has_normals;
 in vec3 v_relative;
 in float v_node_scalar;
 in float v_depth;
 in vec3 v_normal;
-layout(location = 0) out vec4 frag_color;
-layout(location = 1) out float frag_reveal;
+//@OIT_EMIT@
 ivec2 address(uint index, uint width) {
     return ivec2(int(index % width), int(index / width));
 }
@@ -181,26 +208,7 @@ void main() {
     else if (texelFetch(u_selected_elements, address(element, u_element_width), 0).r != 0u)
         shaded = mix(shaded, u_selection_color, 0.65);
     float alpha = stipple_count < 64 ? 1.0 : u_opacity;
-    if (u_oit_depth_only) {
-        // Depth replay of the opaque scene: contribute nothing to the
-        // accumulation targets (colour masks do not cover both attachments).
-        frag_color = vec4(0.0);
-        frag_reveal = 0.0;
-    } else if (u_oit) {
-        // Weighted blended order-independent transparency.  The colour
-        // target accumulates premultiplied colour and weight; the second
-        // target accumulates -log(1 - alpha), so that exp(-sum) is the exact
-        // product of the layers' transmittances without a separate blend mode.
-        float span = max(1.0e-6, u_oit_depth_range.y - u_oit_depth_range.x);
-        float nearness = 1.0 - clamp((v_depth - u_oit_depth_range.x) / span, 0.0, 1.0);
-        float weight = 1.0 + 3.0 * nearness;
-        float covered = min(alpha, 0.999);
-        frag_color = vec4(shaded * covered * weight, covered * weight);
-        frag_reveal = -log(1.0 - covered);
-    } else {
-        frag_color = vec4(shaded, alpha);
-        frag_reveal = 0.0;
-    }
+    emit_color(shaded, alpha, v_depth);
 }
 """
 
@@ -301,11 +309,16 @@ uniform float u_deformation_scale;
 uniform vec2 u_viewport;
 uniform float u_half_width;
 uniform float u_near;
+// 0: butt-ended quad drawn as a 4-vertex triangle strip.  k > 0: a capsule
+// with round caps drawn as a triangle fan of 2 * (k + 1) + 2 vertices, which
+// fills the wedge at a polyline joint and keeps the rim antialiased by MSAA.
+uniform int u_cap_segments;
 in vec3 in_start;
 in vec3 in_end;
 in vec3 in_start_displacement;
 in vec3 in_end_displacement;
 out vec3 v_relative;
+out float v_depth;
 flat out uint v_primitive;
 void main() {
     vec3 start = u_linear * (in_start + u_deformation_scale * in_start_displacement)
@@ -332,14 +345,40 @@ void main() {
     vec2 screen_end = clip_end.xy / clip_end.w * u_viewport;
     vec2 direction = screen_end - screen_start;
     float length_px = max(length(direction), 1.0e-6);
-    vec2 normal = vec2(-direction.y, direction.x) / length_px;
-    bool at_end = gl_VertexID >= 2;
-    bool positive = gl_VertexID == 1 || gl_VertexID == 3;
-    vec4 clip = at_end ? clip_end : clip_start;
-    vec2 offset = normal * (positive ? u_half_width : -u_half_width);
-    clip.xy += offset * (2.0 / u_viewport) * clip.w;
+    vec2 unit = direction / length_px;
+    vec2 normal = vec2(-unit.y, unit.x);
+    vec4 clip;
+    bool at_end;
+    if (u_cap_segments == 0) {
+        at_end = gl_VertexID >= 2;
+        bool positive = gl_VertexID == 1 || gl_VertexID == 3;
+        clip = at_end ? clip_end : clip_start;
+        vec2 offset = normal * (positive ? u_half_width : -u_half_width);
+        clip.xy += offset * (2.0 / u_viewport) * clip.w;
+    } else if (gl_VertexID == 0) {
+        // Fan centre: a point on the segment, inside the convex capsule.
+        at_end = false;
+        clip = 0.5 * (clip_start + clip_end);
+    } else {
+        int outline = 2 * (u_cap_segments + 1);
+        int index = (gl_VertexID - 1) % outline;   // the closing vertex wraps to 0
+        at_end = index > u_cap_segments;
+        int step = at_end ? index - (u_cap_segments + 1) : index;
+        float theta = 3.14159265 * float(step) / float(u_cap_segments);
+        // Start cap sweeps +normal -> -direction -> -normal; the end cap
+        // continues -normal -> +direction -> +normal.
+        vec2 around = at_end
+            ? -normal * cos(theta) + unit * sin(theta)
+            : normal * cos(theta) - unit * sin(theta);
+        clip = at_end ? clip_end : clip_start;
+        clip.xy += around * u_half_width * (2.0 / u_viewport) * clip.w;
+    }
     gl_Position = segment_visible ? clip : vec4(2.0, 2.0, 2.0, 1.0);
-    v_relative = at_end ? end : start;
+    bool centre = u_cap_segments != 0 && gl_VertexID == 0;
+    v_relative = centre ? 0.5 * (start + end) : (at_end ? end : start);
+    float depth_start = -view_start.z;
+    float depth_end = -view_end.z;
+    v_depth = centre ? 0.5 * (depth_start + depth_end) : (at_end ? depth_end : depth_start);
     v_primitive = uint(gl_InstanceID);
 }
 """
@@ -356,8 +395,9 @@ uniform bool u_section_enabled;
 uniform vec3 u_section_normal;
 uniform float u_section_relative_offset;
 in vec3 v_relative;
+in float v_depth;
 flat in uint v_primitive;
-out vec4 frag_color;
+//@OIT_EMIT@
 ivec2 address(uint index, uint width) {
     return ivec2(int(index % width), int(index / width));
 }
@@ -372,7 +412,7 @@ void main() {
         color = mix(color, u_preselection_color, 0.85);
     else if ((semantic & 1u) != 0u)
         color = mix(color, u_highlight_color, 0.80);
-    frag_color = vec4(color, u_opacity);
+    emit_color(color, u_opacity, v_depth);
 }
 """
 
@@ -412,9 +452,11 @@ uniform float u_point_size;
 in vec3 in_position;
 in vec3 in_displacement;
 out vec3 v_relative;
+out float v_depth;
 void main() {
     vec3 local = in_position + u_deformation_scale * in_displacement;
     v_relative = u_linear * local + u_origin_from_camera;
+    v_depth = -(u_view_rotation * vec4(v_relative, 1.0)).z;
     gl_Position = u_projection * u_view_rotation * vec4(v_relative, 1.0);
     gl_PointSize = u_point_size;
 }
@@ -435,7 +477,8 @@ uniform float u_section_relative_offset;
 uniform usampler2D u_semantic_points;
 uniform uint u_point_width;
 in vec3 v_relative;
-out vec4 frag_color;
+in float v_depth;
+//@OIT_EMIT@
 ivec2 address(uint index, uint width) {
     return ivec2(int(index % width), int(index / width));
 }
@@ -454,7 +497,7 @@ void main() {
         color = mix(color, u_preselection_color, 0.90);
     else if ((semantic & 1u) != 0u)
         color = mix(color, u_highlight_color, 0.85);
-    frag_color = vec4(color, u_opacity);
+    emit_color(color, u_opacity, v_depth);
 }
 """
 
@@ -483,6 +526,10 @@ void main() {
 }
 """
 
+
+for _name in ("_FRAGMENT", "_LINE_FRAGMENT", "_POINT_FRAGMENT"):
+    globals()[_name] = globals()[_name].replace("//@OIT_EMIT@", _OIT_EMIT_GLSL)
+del _name
 
 def _matrix_bytes(matrix: np.ndarray) -> bytes:
     return np.asarray(matrix, dtype=np.float32).T.tobytes()
@@ -587,6 +634,14 @@ def _surface_stipple_windows(
 
 # Clip-space depth bias for the translucent pass (fraction of the depth range).
 _OIT_DEPTH_BIAS = 2.0e-5
+
+# Lines at least this many device pixels wide are drawn as round-capped
+# capsules so polyline joints are filled; thinner lines keep the cheaper
+# butt-ended quad.  ANY3DVIEW_ROUND_JOINS=0 forces the quad everywhere.
+_ROUND_JOIN_MIN_HALF_WIDTH = 1.5
+_ROUND_JOINS = os.environ.get("ANY3DVIEW_ROUND_JOINS", "").strip().casefold() not in {
+    "0", "false", "off", "no",
+}
 
 _DEFAULT_LIGHT = Light()
 _MISSING = object()
@@ -1960,13 +2015,133 @@ class ModernGLRenderer:
         ctx.disable(moderngl.BLEND | moderngl.CULL_FACE)
         ctx.enable(moderngl.DEPTH_TEST)
         ctx.depth_func = "1"
-        ctx.depth_mask = True
+        destination.depth_mask = True
         resolved_color.use(location=0)
         resolved_depth.use(location=1)
         self._set_uniform_value(self._msaa_program, "u_color", 0)
         self._set_uniform_value(self._msaa_program, "u_depth", 1)
         self._msaa_vao.render(mode=moderngl.TRIANGLES, vertices=3)
         ctx.depth_func = "<="
+
+    def _line_cap_segments(self, group: _Group) -> int:
+        """Segments per round cap, or 0 for the butt-ended quad."""
+
+        half = group.line_width * 0.5 * self.pixel_ratio
+        if not _ROUND_JOINS or half < _ROUND_JOIN_MIN_HALF_WIDTH:
+            return 0
+        return int(min(12, max(3, math.ceil(half))))
+
+    def _draw_lines(
+        self,
+        group: _Group,
+        chunk: _Chunk,
+        frame: _CameraFrame,
+        selection_color: str,
+        preselection_color: str,
+        occlude_lines: bool,
+        show_mesh_lines: bool,
+        *,
+        oit: bool = False,
+        depth_only: bool = False,
+        depth_range: tuple[float, float] = (0.0, 1.0),
+    ) -> None:
+        """Draw one chunk's lines (``depth_only`` replays occluders for OIT)."""
+
+        if (
+            group.depth_only
+            or not (show_mesh_lines or not group.mesh_lines)
+            or chunk.line_render_vao is None
+        ):
+            return
+        ctx = self.ctx
+        without_depth = group.line_overlay or not occlude_lines
+        if depth_only and without_depth:
+            return  # overlay lines are never in front of anything
+        program = self.line_program
+        ctx.disable(moderngl.CULL_FACE)
+        if without_depth:
+            ctx.disable(moderngl.DEPTH_TEST)
+        self._uniforms(program, chunk, frame)
+        chunk.bind_line_semantics(program, self._set_uniform_value)
+        self._set_uniform_value(program, "u_color", _rgb(group.line_color))
+        self._set_uniform_value(program, "u_highlight_color", _rgb(selection_color))
+        self._set_uniform_value(
+            program, "u_preselection_color", _rgb(preselection_color)
+        )
+        self._set_uniform_value(program, "u_opacity", group.opacity)
+        self._set_uniform_value(
+            program, "u_half_width", group.line_width * 0.5 * self.pixel_ratio
+        )
+        self._set_uniform_value(program, "u_oit", oit)
+        self._set_uniform_value(program, "u_oit_depth_only", depth_only)
+        self._set_uniform_value(program, "u_oit_depth_range", depth_range)
+        caps = self._line_cap_segments(group)
+        self._set_uniform_value(program, "u_cap_segments", caps)
+        if caps:
+            chunk.line_render_vao.render(
+                mode=moderngl.TRIANGLE_FAN,
+                vertices=2 * (caps + 1) + 2,
+                instances=len(chunk.mesh.lines),
+            )
+        else:
+            chunk.line_render_vao.render(
+                mode=moderngl.TRIANGLE_STRIP,
+                vertices=4,
+                instances=len(chunk.mesh.lines),
+            )
+        if not depth_only:
+            self.draw_calls += 1
+        if without_depth:
+            ctx.enable(moderngl.DEPTH_TEST)
+
+    def _draw_points(
+        self,
+        group: _Group,
+        chunk: _Chunk,
+        frame: _CameraFrame,
+        selection_color: str,
+        preselection_color: str,
+        *,
+        oit: bool = False,
+        depth_only: bool = False,
+        depth_range: tuple[float, float] = (0.0, 1.0),
+    ) -> None:
+        """Draw one chunk's points (``depth_only`` replays occluders for OIT)."""
+
+        if group.depth_only or chunk.point_render_vao is None:
+            return
+        ctx = self.ctx
+        without_depth = group.point_overlay
+        if depth_only and without_depth:
+            return
+        program = self.point_program
+        ctx.disable(moderngl.CULL_FACE)
+        ctx.enable(moderngl.PROGRAM_POINT_SIZE)
+        if without_depth:
+            ctx.disable(moderngl.DEPTH_TEST)
+        self._uniforms(program, chunk, frame)
+        chunk.bind_point_semantics(program, self._set_uniform_value)
+        self._set_uniform_value(program, "u_color", _rgb(group.point_color))
+        self._set_uniform_value(program, "u_highlight_color", _rgb(selection_color))
+        self._set_uniform_value(
+            program, "u_preselection_color", _rgb(preselection_color)
+        )
+        self._set_uniform_value(
+            program, "u_outline_color", _rgb(group.point_outline or group.point_color)
+        )
+        self._set_uniform_value(program, "u_has_outline", bool(group.point_outline))
+        self._set_uniform_value(program, "u_opacity", group.opacity)
+        self._set_uniform_value(
+            program, "u_point_size", group.point_size * self.pixel_ratio
+        )
+        self._set_uniform_value(program, "u_oit", oit)
+        self._set_uniform_value(program, "u_oit_depth_only", depth_only)
+        self._set_uniform_value(program, "u_oit_depth_range", depth_range)
+        chunk.point_render_vao.render(mode=moderngl.POINTS)
+        if not depth_only:
+            self.draw_calls += 1
+        if without_depth:
+            ctx.enable(moderngl.DEPTH_TEST)
 
     def _release_oit_targets(self) -> None:
         targets, self._oit_targets = self._oit_targets, None
@@ -2030,6 +2205,8 @@ class ModernGLRenderer:
         preselection_color: str,
         opaque_items: list,
         items: list,
+        occlude_lines: bool = True,
+        show_mesh_lines: bool = True,
     ) -> bool:
         """Draw translucent surfaces with weighted blended OIT.
 
@@ -2058,36 +2235,56 @@ class ModernGLRenderer:
         # The opaque scene's depth lives in the caller's target (often a
         # default framebuffer that cannot be attached here), so replay the
         # opaque surfaces depth-only to occlude translucent fragments.
-        ctx.depth_mask = True
+        oit_fbo.depth_mask = True
         ctx.enable(moderngl.BLEND)
         ctx.blend_func = moderngl.ONE, moderngl.ONE
         self._set_uniform_value(self.render_program, "u_oit_depth_only", True)
         for group, chunk in opaque_items:
-            if not chunk.mesh.triangle_count:
-                continue
-            if not group.cull_backface:
-                ctx.disable(moderngl.CULL_FACE)
-            self._surface_uniforms(
-                group, chunk, frame, camera, light, shading_enabled,
-                selection_color, preselection_color,
+            if chunk.mesh.triangle_count:
+                if not group.cull_backface:
+                    ctx.disable(moderngl.CULL_FACE)
+                self._surface_uniforms(
+                    group, chunk, frame, camera, light, shading_enabled,
+                    selection_color, preselection_color,
+                )
+                chunk.render_vao.render(mode=moderngl.TRIANGLES)
+                ctx.enable(moderngl.CULL_FACE)
+            # Opaque lines and points occlude translucent surfaces behind them.
+            self._draw_lines(
+                group, chunk, frame, selection_color, preselection_color,
+                occlude_lines, show_mesh_lines, depth_only=True,
             )
-            chunk.render_vao.render(mode=moderngl.TRIANGLES)
+            self._draw_points(
+                group, chunk, frame, selection_color, preselection_color,
+                depth_only=True,
+            )
             ctx.enable(moderngl.CULL_FACE)
         self._set_uniform_value(self.render_program, "u_oit_depth_only", False)
-        ctx.depth_mask = False
+        oit_fbo.depth_mask = False  # translucent layers must not occlude each other
         self._set_uniform_value(self.render_program, "u_depth_bias", _OIT_DEPTH_BIAS)
         for group, chunk in items:
-            if not group.cull_backface:
-                ctx.disable(moderngl.CULL_FACE)
-            self._surface_uniforms(
-                group, chunk, frame, camera, light, shading_enabled,
-                selection_color, preselection_color,
-                oit=True, oit_depth_range=depth_range,
+            if chunk.mesh.triangle_count:
+                if not group.cull_backface:
+                    ctx.disable(moderngl.CULL_FACE)
+                self._surface_uniforms(
+                    group, chunk, frame, camera, light, shading_enabled,
+                    selection_color, preselection_color,
+                    oit=True, oit_depth_range=depth_range,
+                )
+                chunk.render_vao.render(mode=moderngl.TRIANGLES)
+                self.draw_calls += 1
+            self._draw_lines(
+                group, chunk, frame, selection_color, preselection_color,
+                occlude_lines, show_mesh_lines, oit=True, depth_range=depth_range,
             )
-            chunk.render_vao.render(mode=moderngl.TRIANGLES)
-            self.draw_calls += 1
+            self._draw_points(
+                group, chunk, frame, selection_color, preselection_color,
+                oit=True, depth_range=depth_range,
+            )
             ctx.enable(moderngl.CULL_FACE)
         self._set_uniform_value(self.render_program, "u_oit", False)
+        self._set_uniform_value(self.line_program, "u_oit", False)
+        self._set_uniform_value(self.point_program, "u_oit", False)
         self._set_uniform_value(self.render_program, "u_depth_bias", 0.0)
 
         framebuffer.use()
@@ -2101,7 +2298,8 @@ class ModernGLRenderer:
         self._oit_vao.render(mode=moderngl.TRIANGLES, vertices=3)
         ctx.enable(moderngl.DEPTH_TEST | moderngl.CULL_FACE)
         ctx.disable(moderngl.BLEND)
-        ctx.depth_mask = True
+        oit_fbo.depth_mask = True
+        framebuffer.depth_mask = True
         return True
 
     def render(
@@ -2140,6 +2338,11 @@ class ModernGLRenderer:
                 destination = target or self.ctx.screen
                 target = pair[0]
         framebuffer = target or self.ctx.screen
+        # Write masks belong to the framebuffer (moderngl's Context has none),
+        # and a colour mask takes effect when the framebuffer is bound.  Reset
+        # them first: a stale mask would stop the clear below.
+        framebuffer.depth_mask = True
+        framebuffer.color_mask = (True, True, True, True)
         framebuffer.use()
         self.ctx.viewport = (0, 0, int(viewport[0]), int(viewport[1]))
         framebuffer.clear(*clear_color, depth=1.0)
@@ -2169,14 +2372,20 @@ class ModernGLRenderer:
             key=lambda item: item[0].layer,
         )
         ordered = opaque_items + transparent
-        # Translucent surfaces without an explicit stipple pattern are drawn
-        # order-independently once the opaque scene is in; their lines and
-        # points are still blended in sorted order afterwards.
+        # Translucent surfaces, lines and points without an explicit stipple
+        # pattern are drawn order-independently once the opaque scene is in.
         oit_items = [
             item for item in transparent
-            if item[1].mesh.triangle_count
-            and not item[0].stipple
+            if not item[0].stipple
             and not item[0].depth_only
+            and (
+                item[1].mesh.triangle_count
+                or (
+                    item[1].line_render_vao is not None
+                    and (show_mesh_lines or not item[0].mesh_lines)
+                )
+                or item[1].point_render_vao is not None
+            )
         ]
         oit_ids: set[int] = set()
         oit_pending = bool(oit_items)
@@ -2187,117 +2396,43 @@ class ModernGLRenderer:
                 if self._render_oit(
                     framebuffer, viewport, frame, camera, light, shading_enabled,
                     selection_color, preselection_color, opaque_items, oit_items,
+                    occlude_lines, show_mesh_lines,
                 ):
                     oit_ids = {id(item[1]) for item in oit_items}
             if is_transparent:
                 self.ctx.enable(moderngl.BLEND)
                 self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
-                self.ctx.depth_mask = False
+                framebuffer.depth_mask = False
             else:
                 self.ctx.disable(moderngl.BLEND)
-                self.ctx.depth_mask = True
+                framebuffer.depth_mask = True
             if not group.cull_backface:
                 self.ctx.disable(moderngl.CULL_FACE)
             if group.depth_only:
-                self.ctx.color_mask = (False, False, False, False)
+                framebuffer.color_mask = (False, False, False, False)
+                framebuffer.use()  # applies the colour mask
             drawn_by_oit = id(chunk) in oit_ids
             if not drawn_by_oit:
                 self._surface_uniforms(
                     group, chunk, frame, camera, light, shading_enabled,
                     selection_color, preselection_color,
                 )
-            if chunk.mesh.triangle_count and not drawn_by_oit:
-                chunk.render_vao.render(mode=moderngl.TRIANGLES)
-                self.draw_calls += 1
-            line_without_depth = False
-            if (
-                not group.depth_only
-                and (show_mesh_lines or not group.mesh_lines)
-                and chunk.line_render_vao is not None
-            ):
-                self.ctx.disable(moderngl.CULL_FACE)
-                line_without_depth = group.line_overlay or not occlude_lines
-                if line_without_depth:
-                    self.ctx.disable(moderngl.DEPTH_TEST)
-                self._uniforms(self.line_program, chunk, frame)
-                chunk.bind_line_semantics(
-                    self.line_program, self._set_uniform_value
+                if chunk.mesh.triangle_count:
+                    chunk.render_vao.render(mode=moderngl.TRIANGLES)
+                    self.draw_calls += 1
+                self._draw_lines(
+                    group, chunk, frame, selection_color, preselection_color,
+                    occlude_lines, show_mesh_lines,
                 )
-                self._set_uniform_value(
-                    self.line_program, "u_color", _rgb(group.line_color)
+                self._draw_points(
+                    group, chunk, frame, selection_color, preselection_color
                 )
-                self._set_uniform_value(
-                    self.line_program,
-                    "u_highlight_color",
-                    _rgb(selection_color),
-                )
-                self._set_uniform_value(
-                    self.line_program,
-                    "u_preselection_color",
-                    _rgb(preselection_color),
-                )
-                self._set_uniform_value(
-                    self.line_program, "u_opacity", group.opacity
-                )
-                self._set_uniform_value(
-                    self.line_program, "u_half_width",
-                    group.line_width * 0.5 * self.pixel_ratio,
-                )
-                chunk.line_render_vao.render(
-                    mode=moderngl.TRIANGLE_STRIP,
-                    vertices=4,
-                    instances=len(chunk.mesh.lines),
-                )
-                self.draw_calls += 1
-                if line_without_depth:
-                    self.ctx.enable(moderngl.DEPTH_TEST)
-            if not group.depth_only and chunk.point_render_vao is not None:
-                self.ctx.disable(moderngl.CULL_FACE)
-                self.ctx.enable(moderngl.PROGRAM_POINT_SIZE)
-                point_without_depth = group.point_overlay
-                if point_without_depth:
-                    self.ctx.disable(moderngl.DEPTH_TEST)
-                self._uniforms(self.point_program, chunk, frame)
-                chunk.bind_point_semantics(
-                    self.point_program, self._set_uniform_value
-                )
-                self._set_uniform_value(
-                    self.point_program, "u_color", _rgb(group.point_color)
-                )
-                self._set_uniform_value(
-                    self.point_program,
-                    "u_highlight_color",
-                    _rgb(selection_color),
-                )
-                self._set_uniform_value(
-                    self.point_program,
-                    "u_preselection_color",
-                    _rgb(preselection_color),
-                )
-                self._set_uniform_value(
-                    self.point_program,
-                    "u_outline_color",
-                    _rgb(group.point_outline or group.point_color),
-                )
-                self._set_uniform_value(
-                    self.point_program, "u_has_outline", bool(group.point_outline)
-                )
-                self._set_uniform_value(
-                    self.point_program, "u_opacity", group.opacity
-                )
-                self._set_uniform_value(
-                    self.point_program, "u_point_size",
-                    group.point_size * self.pixel_ratio,
-                )
-                chunk.point_render_vao.render(mode=moderngl.POINTS)
-                self.draw_calls += 1
-                if point_without_depth:
-                    self.ctx.enable(moderngl.DEPTH_TEST)
             if not group.cull_backface or chunk.line_render_vao is not None or chunk.point_render_vao is not None:
                 self.ctx.enable(moderngl.CULL_FACE)
             if group.depth_only:
-                self.ctx.color_mask = (True, True, True, True)
-        self.ctx.depth_mask = True
+                framebuffer.color_mask = (True, True, True, True)
+                framebuffer.use()
+        framebuffer.depth_mask = True
         self.ctx.disable(moderngl.BLEND)
         if resolve_to is not None:
             self._resolve_msaa(

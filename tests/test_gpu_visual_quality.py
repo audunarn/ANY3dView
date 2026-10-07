@@ -239,3 +239,74 @@ def test_msaa_samples_setting(monkeypatch, value, expected):
     monkeypatch.setenv("ANY3DVIEW_MSAA", value)
 
     assert msaa_samples() == expected
+
+
+# ---------------------------------------------------------------- write masks
+def test_depth_only_group_occludes_without_drawing_any_colour(renderer):
+    renderer.add_mesh(MeshHandle(triangle(0.0)), "#ff0000", depth_only=True, lit=False)
+    renderer.add_mesh(MeshHandle(triangle(-1.0, scale=2 * SCALE)), "#0000ff", lit=False)
+
+    pixels, _ = render(renderer)
+
+    # The occluder itself paints nothing and hides the blue triangle behind it.
+    assert (interior(pixels, renderer) == 255).all()
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_translucent_surfaces_do_not_write_depth(renderer, fallback):
+    renderer._oit_failed = fallback
+    renderer.add_mesh(MeshHandle(triangle()), "#ff0000", opacity=0.5, lit=False)
+
+    _pixels, depth = render(renderer, depth_texture=True)
+
+    y, x = interior_points(renderer)[0]
+    assert depth[y, x] == pytest.approx(1.0)  # still the cleared depth
+
+
+def test_a_stale_depth_mask_does_not_block_the_next_frames_depth_clear(renderer):
+    renderer.add_mesh(MeshHandle(triangle()), "#000000", lit=False)
+    context = renderer.ctx
+    color = context.texture(SIZE, 4)
+    depth = context.depth_texture(SIZE)
+    framebuffer = context.framebuffer(color, depth)
+    framebuffer.depth_mask = False  # left behind by some earlier pass
+    framebuffer.color_mask = (False, False, False, False)
+
+    renderer.render(Camera3D(), SIZE, target=framebuffer, clear_color=WHITE)
+
+    y, x = interior_points(renderer)[0]
+    values = np.frombuffer(depth.read(), dtype=np.float32).reshape(SIZE[1], SIZE[0])
+    assert values[y, x] < 0.999 and values[2, 2] == pytest.approx(1.0)
+    pixels = np.frombuffer(framebuffer.read(components=3, alignment=1), np.uint8)
+    assert pixels.reshape(SIZE[1], SIZE[0], 3)[y, x].max() < 10  # black triangle drawn
+    framebuffer.release()
+    color.release()
+    depth.release()
+
+
+def closed_box(half=3.0):
+    corners = np.asarray(
+        [[x, y, z] for z in (-half, half) for y in (-half, half) for x in (-half, half)],
+        dtype=np.float32,
+    )
+    quads = [(0, 2, 3, 1), (4, 5, 7, 6), (0, 1, 5, 4), (2, 6, 7, 3), (0, 4, 6, 2), (1, 3, 7, 5)]
+    triangles = []
+    for a, b, c, d in quads:
+        triangles += [(a, b, c), (a, c, d)]
+    return MeshArrays(corners, np.asarray(triangles, dtype=np.uint32))
+
+
+@pytest.mark.parametrize("opacity", [0.35, 0.5])
+def test_both_walls_of_a_translucent_shell_contribute(renderer, opacity):
+    """Looking through a closed shell crosses two layers, so alpha compounds."""
+
+    renderer.add_mesh(
+        MeshHandle(closed_box()), "#000000", opacity=opacity, lit=False,
+        cull_backface=False,
+    )
+
+    pixels, _ = render(renderer)
+
+    centre = pixels[SIZE[1] // 2, SIZE[0] // 2, 0] / 255.0
+    expected = 1.0 - (1.0 - opacity) ** 2  # front wall over back wall
+    assert 1.0 - centre == pytest.approx(expected, abs=0.03)

@@ -446,7 +446,7 @@ class GPUHudRenderer:
             moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA,
             moderngl.ONE, moderngl.ONE_MINUS_SRC_ALPHA,
         )
-        self.context.depth_mask = False
+        framebuffer.depth_mask = False
         self.atlas.bind(0)
         self.program["u_atlas"].value = 0
         self.program["u_atlas_size"].value = (
@@ -471,7 +471,7 @@ class GPUHudRenderer:
 
         draw(self.depth_vertices, True)
         draw(self.vertices, False)
-        self.context.depth_mask = True
+        framebuffer.depth_mask = True
         self.context.disable(moderngl.BLEND)
 
     def release(self) -> None:

@@ -1,0 +1,39 @@
+..........................E
+=================================== ERRORS ====================================
+_ ERROR at setup of test_gpu_line_element_endpoint_colours_missing_active_and_primitive_ids _
+
+    @pytest.fixture
+    def renderer():
+        import moderngl
+        from any3dview.gpu.renderer import ModernGLRenderer
+        context=moderngl.create_standalone_context(require=330)
+        root=Path(r"C:/ANYworkspaceWork/anypost-20261012/beam-viewer-evidence")
+>       (root/"gpu-runtime.json").write_text(json.dumps({key:context.info.get(key) for key in ("GL_VENDOR","GL_RENDERER","GL_VERSION")}),encoding="utf-8")
+
+tests\test_beam_lines.py:35: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+C:\Python\Python314\Lib\pathlib\__init__.py:809: in write_text
+    with self.open(mode='w', encoding=encoding, errors=errors, newline=newline) as f:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = WindowsPath('C:/ANYworkspaceWork/anypost-20261012/beam-viewer-evidence/gpu-runtime.json')
+mode = 'w', buffering = -1, encoding = 'utf-8', errors = None, newline = None
+
+    def open(self, mode='r', buffering=-1, encoding=None,
+             errors=None, newline=None):
+        """
+        Open the file pointed to by this path and return a file object, as
+        the built-in open() function does.
+        """
+        if "b" not in mode:
+            encoding = io.text_encoding(encoding)
+>       return io.open(self, mode, buffering, encoding, errors, newline)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       PermissionError: [Errno 13] Permission denied: 'C:\\ANYworkspaceWork\\anypost-20261012\\beam-viewer-evidence\\gpu-runtime.json'
+
+C:\Python\Python314\Lib\pathlib\__init__.py:771: PermissionError
+=========================== short test summary info ===========================
+ERROR tests/test_beam_lines.py::test_gpu_line_element_endpoint_colours_missing_active_and_primitive_ids
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+26 passed, 3 skipped, 1 error in 2.97s

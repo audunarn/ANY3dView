@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:/Python/Python314/python.exe",
+    "-m",
+    "pytest",
+    "-x",
+    "-q",
+    "-p",
+    "no:cacheprovider"
+  ],
+  "timeout_s": 60.0,
+  "exit_code": 1,
+  "timed_out": false,
+  "process_wall_s": 5.240477900020778
+}

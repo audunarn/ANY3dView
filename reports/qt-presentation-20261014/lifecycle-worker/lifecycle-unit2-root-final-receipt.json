@@ -1,0 +1,26 @@
+{
+ "command": "C:\\Python\\Python314\\python.exe -m pytest tests/test_qt_resource_lifecycle.py tests/test_qt_deferred_failure.py tests/test_qt_update_pump.py tests/test_qt_diagnostic_snapshot_oracle.py -p no:cacheprovider -q",
+ "cwd": "C:\\Github\\ANY3dView",
+ "python": "C:\\Python\\Python314\\python.exe",
+ "env": {
+  "PYTHONDONTWRITEBYTECODE": "1"
+ },
+ "timeout_seconds": 15.0,
+ "timed_out": false,
+ "exit": 0,
+ "wall_seconds_raw": 2.374799699999812,
+ "wall_seconds_repr": "2.374799699999812",
+ "budget": {
+  "total": 30.0,
+  "old_spent_upper": 6.1615,
+  "new_spent_before": 1.8778075000000172,
+  "remaining_before": 21.960692499999983,
+  "remaining_after": 19.58589280000017
+ },
+ "source_sha256": {
+  "src/any3dview/qt.py": "8fd5b0ffb75cb7040e7ace09307e17c3648290b90758d849ae6a58f806478dfc",
+  "tests/test_qt_resource_lifecycle.py": "bb98f5b4a29ce51069dc929910ec2ff5a08164f6cc325b780700b8f003407733"
+ },
+ "stdout": "..........................................................               [100%]\n58 passed in 0.38s\n",
+ "stderr": "Failed to find real location of C:\\Python\\Python314\\python.exe\nException ignored while calling deallocator <function Console.__del__ at 0x00000172EACFE8D0>:\nTraceback (most recent call last):\n  File \"C:\\Python\\Python314\\Lib\\site-packages\\pyreadline3\\console\\console.py\", line 254, in __del__\nOSError: [WinError -1073741816] Windows Error 0xc0000008\n"
+}

@@ -1,0 +1,12 @@
+Failed to find real location of C:\Python\Python314\python.exe
+Traceback (most recent call last):
+  File "C:\Github\ANY3dView\tools\bench_barge_review.py", line 87, in <module>
+    v.set_section_plane(SectionPlane(Point3D(1.,0.,0.),0.)); capture('section')
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Github\ANY3dView\reports\performance-20261019\baseline-src\any3dview\retained_viewer.py", line 2936, in set_section_plane
+    self._section_plane = SectionPlane(as_point(normal), offset, enabled)
+                                       ~~~~~~~~^^^^^^^^
+  File "C:\Github\ANY3dView\reports\performance-20261019\baseline-src\any3dview\core.py", line 325, in as_point
+    x, y, z = value
+    ^^^^^^^
+TypeError: cannot unpack non-iterable SectionPlane object

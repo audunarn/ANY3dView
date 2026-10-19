@@ -338,3 +338,61 @@ terms that accompanied those releases.
 
 The optional GPU backend bundles the separately licensed native TkGL component;
 see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+
+### Retained beam fields
+
+`MeshArrays(..., line_to_element=indices)` optionally maps each explicit line
+primitive to a zero-based row of the element table, using the same semantics as
+`triangle_to_element`. It is a trailing optional field, so existing positional
+arguments and unmapped solid-wire rendering remain compatible. Mixed meshes
+can map triangles and lines into one explicit `element_ids`/scalar table;
+indices must be integer, in range and have one entry per line.
+
+Mapped lines display the supplied element scalar exactly. Explicit node fields
+interpolate their endpoint values for rendering. No stresses are inferred or
+averaged. NaN samples use `invalid_color`; mapped active elements and semantic
+visibility apply to both rendering and picking. Line primitive indices and
+semantic keys stay unchanged; fallback picks expose the supplied element ID
+through `SelectionHit.identity`. Explicit semantic owners retain precedence.
+
+`handle.update_element_scalars(...)` and `update_node_scalars(...)` retain
+geometry, topology, displacement, mapping and picking buffers. Only field
+buffers/textures are uploaded. Calculated/archive values stay float64; the
+rendering fields are float32. The added line textures retain no extra converted
+CPU field arrays; GPU/driver allocations are separate from application cache
+accounting. ANYpost accounts its retained display conversion under its reader
+cache ceiling.
+
+GPU Tk and Qt hosts support these line fields. Software hosts explicitly
+refuse mapped element scalar/active fields and node scalar line fields before
+attachment or mutation. Automatic Qt software fallback similarly reports the
+refusal instead of attaching an unsupported field. Opt-in small host checks
+are `ANY3DVIEW_RUN_BEAM_HOST_TESTS=1 pytest tests/test_beam_hosts.py`.
+
+`MeshHandle.update_scalar_fields(node_scalars=..., element_scalars=...)` validates both scalar domains together before one scalar generation/redraw. An optional `before_publish(candidate)` reservation hook runs after backend acceptance. Validation or reservation refusal preserves the prior mesh and generations; geometry/deformation buffers remain retained. Existing single-domain setters are unchanged.
+
+If an atomic scalar change callback raises after publication, the handle restores its old mesh and advances the scalar generation again. It does not invoke the failing callback again; the next draw/update resynchronizes the display. Validation/reservation refusal still precedes publication and leaves mesh/generation unchanged.
+
+ANY3dView0.5.6 adds retained scalar appearance updates:
+`handle.update_appearance(scalar_range=(minimum,maximum),
+colormap=((0.0,'#0000ff'),(0.5,'#00ff00'),(1.0,'#ff0000')))`.
+Both arguments are optional; omitted values stayunchanged and explicitNone restores
+auto scalar limits/default palette. `add_mesh_arrays` accepts the same initial
+options; `handle.appearance` is an immutable validated snapshot. Ranges must be
+finite and ordered; palette positions are finite ordered0..1 values and colors
+RGB hex. Equalpositions select the rightmost stop at that position. Updates run
+on the owner thread, refuse removed handles, and validate before publication.
+Callback failure restores old appearance with a fresh monotonic generation;
+consumers redraw/replay from the authoritative handle on the next draw/update.
+
+GPU updates scalar-range uniforms and the existing256-entry palette texture only;
+geometry, topology, deformation/scalar buffers, owners and integerpick structures
+are retained. Palette/appearance update counters are reported separately from
+geometry uploads. Qtsoftware uses the same stop interpolation for supported
+triangle scalar fields; unsupported mapped line fields remain explicit refusals.
+Appearance persists through renderer recreation/animation snapshots. This is
+rendering metadata; engineering result arrays and source certification are untouched.
+A failed palette upload is restored best-effort and marks all palette textures
+for a full retry; the original GPU exception is retained. Initial palette failure
+releases unpublished retained resources. The earlier239B wheel is superseded.

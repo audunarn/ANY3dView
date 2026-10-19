@@ -1,0 +1,24 @@
+{
+  "command": [
+    "C:/Python/Python314/python.exe",
+    "-m",
+    "pytest",
+    "tests/test_qt_update_pump.py",
+    "tests/test_scheduler.py",
+    "tests/test_qt_software_responsiveness.py",
+    "tests/test_qt_resource_lifecycle.py",
+    "tests/test_qt_deferred_failure.py",
+    "tests/test_qt_diagnostic_snapshot_oracle.py",
+    "tests/test_frame_projection_oracle.py",
+    "tests/test_performance_review_oracle.py",
+    "tests/test_retained.py",
+    "tests/test_selection.py",
+    "-q",
+    "-p",
+    "no:cacheprovider"
+  ],
+  "timeout_s": 120.0,
+  "exit_code": 1,
+  "timed_out": false,
+  "process_wall_s": 5.403681899944786
+}

@@ -1,0 +1,1 @@
+{"effective": {"backend": "gpu", "context_swap": 1, "window_swap": 0, "size": [1860, 811]}, "requests": 246, "heartbeat": {"count": 245, "median_ms": 16.6021, "p95_ms": 17.136, "max_ms": 17.7224}, "request_to_swap": {"count": 242, "median_ms": 16.37345, "p95_ms": 16.829175, "max_ms": 17.3159}, "render_cpu": {"count": 242, "median_ms": 1.05345, "p95_ms": 1.2788, "max_ms": 1.6273}}

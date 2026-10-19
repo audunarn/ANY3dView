@@ -1,0 +1,16 @@
+{
+  "command": [
+    "C:\\Python\\Python314\\python.exe",
+    "-m",
+    "pytest",
+    "tests/test_qt_software_responsiveness.py",
+    "tests/test_qt_update_pump.py",
+    "tests/test_scheduler.py",
+    "-q",
+    "-p",
+    "no:cacheprovider"
+  ],
+  "status": 0,
+  "process_wall_s": 2.2432827000156976,
+  "category": "fake/unit; no QApplication or window"
+}

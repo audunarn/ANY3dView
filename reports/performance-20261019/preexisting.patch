@@ -1,0 +1,2489 @@
+diff --git a/.github/workflows/compatibility.yml b/.github/workflows/compatibility.yml
+index d283620..d57bf75 100644
+--- a/.github/workflows/compatibility.yml
++++ b/.github/workflows/compatibility.yml
+@@ -1,20 +1,47 @@
+ name: Viewer compatibility
+-
+ on:
+   push:
+     branches: [main]
+   pull_request:
+   workflow_dispatch:
+-
++    inputs:
++      peer_ref:
++        description: Optional sibling viewer branch or commit for coordinated changes
++        required: false
++        type: string
++      mesh_ref:
++        description: Optional ANYmesh branch or commit for coordinated dependency changes
++        required: false
++        type: string
+ permissions:
+   contents: read
+ concurrency:
+   group: viewer-tests-${{ github.repository }}-${{ github.ref }}
+   cancel-in-progress: true
+-
+ jobs:
++  resolve:
++    runs-on: ubuntu-latest
++    outputs:
++      peer: ${{ steps.refs.outputs.peer }}
++      mesh: ${{ steps.refs.outputs.mesh }}
++      fem: ${{ steps.refs.outputs.fem }}
++      structure: ${{ steps.refs.outputs.structure }}
++    steps:
++      - name: Freeze cross-repository source identities
++        id: refs
++        env:
++          GH_TOKEN: ${{ github.token }}
++          PEER_REF: ${{ inputs.peer_ref || (startsWith(github.head_ref || github.ref_name, 'codex/viewer-upgrades-') && (github.head_ref || github.ref_name)) || 'main' }}
++          MESH_REF: ${{ inputs.mesh_ref || (startsWith(github.head_ref || github.ref_name, 'codex/viewer-upgrades-') && (github.head_ref || github.ref_name)) || 'main' }}
++        shell: bash
++        run: |
++          peer=$(gh api "repos/audunarn/ANYtk3D/commits/$PEER_REF" --jq .sha)
++          mesh=$(gh api "repos/audunarn/ANYmesh/commits/$MESH_REF" --jq .sha)
++          fem=$(gh api repos/audunarn/ANYfem/commits/HEAD --jq .sha)
++          structure=$(gh api repos/audunarn/ANYstructure/commits/HEAD --jq .sha)
++          printf 'peer=%s\nmesh=%s\nfem=%s\nstructure=%s\n' "$peer" "$mesh" "$fem" "$structure" | tee -a "$GITHUB_OUTPUT"
+   core:
+-    timeout-minutes: 20
++    needs: resolve
+     strategy:
+       fail-fast: false
+       matrix:
+@@ -24,103 +51,142 @@ jobs:
+     steps:
+       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+         with:
++          path: ANY3dView
++          persist-credentials: false
++      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
++        with:
++          repository: audunarn/ANYtk3D
++          ref: ${{ needs.resolve.outputs.peer }}
++          path: ANYtk3D
+           persist-credentials: false
+       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+         with:
+           python-version: ${{ matrix.python }}
+-      - run: python -m pip install -e ".[dev]"
+-      - run: python -m pytest -q -m "not gui"
+-      - run: python tools/check_licensing.py
+-      - run: python -m build
+-      - run: python -m twine check dist/*
++      - name: Install paired viewers without geometry or GPU extras
++        run: python -m pip install -e "./ANY3dView[dev]" -e "./ANYtk3D[dev,capture]"
++      - name: Headless contracts for both viewers
++        shell: bash
++        run: |
++          cd ANY3dView
++          python -m pytest -q -m "not gui"
++          cd ../ANYtk3D
++          python -m pytest -q -m "not gui and not native_gui"
++      - name: Build distributions and check metadata
+         shell: bash
+-      - name: Import the built wheel outside the source checkout
++        run: |
++          python -m build --outdir wheelhouse ANY3dView
++          python -m build --outdir wheelhouse ANYtk3D
++          python -m twine check wheelhouse/*
++      - name: Smoke test installed wheel pair outside the source trees
+         shell: bash
+         run: |
+-          python -m pip install --force-reinstall --no-deps dist/*.whl
++          python -m pip install --force-reinstall --no-deps wheelhouse/*.whl
+           cd "${{ runner.temp }}"
+-          python -I -c "import sys, any3dview; from any3dview import ViewerBackend; assert not {'tkinter', 'PySide6', 'moderngl'} & set(sys.modules)"
+-
++          python -I -c "import any3dview, anytk3d; assert anytk3d.Point3D is any3dview.Point3D; from anytk3d.capture import render_canvas"
+   geometry:
+-    timeout-minutes: 15
++    needs: resolve
++    runs-on: ${{ matrix.os }}
+     strategy:
+       fail-fast: false
+       matrix:
+         os: [ubuntu-latest, windows-latest, macos-latest]
+         python: ["3.11", "3.14"]
+         geometry: ["ANYgeometry==0.4.0", "ANYgeometry>=0.4.3,<0.5"]
+-    runs-on: ${{ matrix.os }}
+     steps:
+       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+         with:
++          path: ANY3dView
++          persist-credentials: false
++      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
++        with:
++          repository: audunarn/ANYtk3D
++          ref: ${{ needs.resolve.outputs.peer }}
++          path: ANYtk3D
+           persist-credentials: false
+       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+         with:
+           python-version: ${{ matrix.python }}
+-      - run: python -m pip install -e ".[dev,geometry]" "${{ matrix.geometry }}"
+-      - run: python -c "import anygeometry, mapbox_earcut"
+-      - run: python -m pytest -q tests/test_anygeometry_adapter.py tests/test_tessellation_quality.py
+-
+-  tk-desktop:
+-    timeout-minutes: 20
++      - run: python -m pip install -e "./ANY3dView[dev,geometry]" -e "./ANYtk3D[dev,capture]"
++      - run: python -m pip install "${{ matrix.geometry }}"
++      - name: Require optional dependencies and exercise geometry contracts
++        working-directory: ANY3dView
++        run: |
++          python -c "import anygeometry, mapbox_earcut"
++          python -m pytest -q tests/test_anygeometry_adapter.py tests/test_tessellation_quality.py
++  desktop:
++    needs: resolve
+     runs-on: ubuntu-latest
+     env:
+       ANY3DVIEW_RUN_GUI_TESTS: "1"
++      ANYTK3D_RUN_GUI_TESTS: "1"
+       LIBGL_ALWAYS_SOFTWARE: "1"
+     steps:
+       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+         with:
++          path: ANY3dView
++          persist-credentials: false
++      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
++        with:
++          repository: audunarn/ANYtk3D
++          ref: ${{ needs.resolve.outputs.peer }}
++          path: ANYtk3D
+           persist-credentials: false
+       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+         with:
+           python-version: "3.13"
+       - run: sudo apt-get update && sudo apt-get install -y xvfb xauth libgl1-mesa-dri libgl-dev
+-      - run: python -m pip install -e ".[dev,gpu,geometry]" "ANYtk3D>=0.5.5,<0.6"
+-      - run: xvfb-run -a python -c "import moderngl; c=moderngl.create_standalone_context(require=330); c.release()"
+-      - run: xvfb-run -a python -m pytest -q
++      - run: python -m pip install -e "./ANY3dView[dev,gpu,geometry]" -e "./ANYtk3D[dev,capture]"
++      - name: Require OpenGL before running desktop contracts
++        run: xvfb-run -a python -c "import moderngl; c=moderngl.create_standalone_context(require=330); c.release()"
++      - name: GPU and software desktop tests
++        shell: bash
++        run: |
++          cd ANY3dView
++          xvfb-run -a python -m pytest -q
++          cd ../ANYtk3D
++          xvfb-run -a python -m pytest -q -m "not native_gui"
+ 
+-  qt:
+-    timeout-minutes: 20
+-    strategy:
+-      fail-fast: false
+-      matrix:
+-        os: [windows-latest, ubuntu-latest]
+-        python: ["3.11", "3.14"]
+-    runs-on: ${{ matrix.os }}
+-    env:
+-      ANY3DVIEW_RUN_QT_TESTS: "1"
++  consumers:
++    needs: resolve
++    runs-on: ubuntu-latest
+     steps:
+       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+         with:
++          path: ANY3dView
++          persist-credentials: false
++      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
++        with:
++          repository: audunarn/ANYtk3D
++          ref: ${{ needs.resolve.outputs.peer }}
++          path: ANYtk3D
++          persist-credentials: false
++      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
++        with:
++          repository: audunarn/ANYfem
++          ref: ${{ needs.resolve.outputs.fem }}
++          path: ANYfem
++          persist-credentials: false
++      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
++        with:
++          repository: audunarn/ANYstructure
++          ref: ${{ needs.resolve.outputs.structure }}
++          path: ANYstructure
++          persist-credentials: false
++      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
++        with:
++          repository: audunarn/ANYmesh
++          ref: ${{ needs.resolve.outputs.mesh }}
++          path: ANYmesh
+           persist-credentials: false
+       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+         with:
+-          python-version: ${{ matrix.python }}
+-      - name: Install Linux Qt/XCB and Mesa runtime
+-        if: runner.os == 'Linux'
++          python-version: "3.13"
++      - name: Resolve and install the consumer dependency graph
++        run: python -m pip install -e "./ANY3dView[dev,gpu,geometry]" -e "./ANYtk3D[dev,capture]" -e "./ANYmesh[gui3d]" -e "./ANYfem[gui,dev]" -e "./ANYstructure[dev]"
++      - name: Consumer viewport contracts
++        shell: bash
+         run: |
+-          sudo apt-get update
+-          sudo apt-get install -y xvfb xauth libegl1 libgl1-mesa-dri libgl-dev libx11-xcb1 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 libxcb-xinerama0 libxkbcommon-x11-0
+-      - name: Install a wheel with the Qt extra
+-        run: python -m pip install ".[dev,gpu,qt]"
+-      - name: Require installed Qt imports without a source-tree fallback
+-        run: python -I -c "import pathlib, any3dview, PySide6, moderngl; from any3dview.qt import QtViewerHostAdapter; assert 'site-packages' in pathlib.Path(any3dview.__file__).parts; print(PySide6.__version__, any3dview.__file__)"
+-      - name: Windows software host contracts
+-        if: runner.os == 'Windows'
+-        env:
+-          QT_QPA_PLATFORM: offscreen
+-          ANY3DVIEW_DISABLE_GPU: "1"
+-        run: python -m pytest tests/test_qt_host.py -q -o pythonpath= --junitxml=qt-results.xml
+-      - name: Linux software and required GPU host contracts
+-        if: runner.os == 'Linux'
+-        env:
+-          QT_QPA_PLATFORM: xcb
+-          LIBGL_ALWAYS_SOFTWARE: "1"
+-          ANY3DVIEW_RUN_QT_GPU_TESTS: "1"
+-        run: xvfb-run -a python -m pytest tests/test_qt_host.py -q -o pythonpath= --junitxml=qt-results.xml
+-      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+-        if: always()
+-        with:
+-          name: qt-${{ matrix.os }}-${{ matrix.python }}
+-          path: qt-results.xml
+-          if-no-files-found: error
++          cd ANYfem
++          python -m pytest -q tests/test_viewer_backend_integration.py tests/test_viewport_commercial_selection.py
++          cd ../ANYstructure
++          python -m pytest -q tests/test_viewer_backend.py
+diff --git a/README.md b/README.md
+index ea86ed4..218d046 100644
+--- a/README.md
++++ b/README.md
+@@ -338,3 +338,61 @@ terms that accompanied those releases.
+ 
+ The optional GPU backend bundles the separately licensed native TkGL component;
+ see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
++
++
++### Retained beam fields
++
++`MeshArrays(..., line_to_element=indices)` optionally maps each explicit line
++primitive to a zero-based row of the element table, using the same semantics as
++`triangle_to_element`. It is a trailing optional field, so existing positional
++arguments and unmapped solid-wire rendering remain compatible. Mixed meshes
++can map triangles and lines into one explicit `element_ids`/scalar table;
++indices must be integer, in range and have one entry per line.
++
++Mapped lines display the supplied element scalar exactly. Explicit node fields
++interpolate their endpoint values for rendering. No stresses are inferred or
++averaged. NaN samples use `invalid_color`; mapped active elements and semantic
++visibility apply to both rendering and picking. Line primitive indices and
++semantic keys stay unchanged; fallback picks expose the supplied element ID
++through `SelectionHit.identity`. Explicit semantic owners retain precedence.
++
++`handle.update_element_scalars(...)` and `update_node_scalars(...)` retain
++geometry, topology, displacement, mapping and picking buffers. Only field
++buffers/textures are uploaded. Calculated/archive values stay float64; the
++rendering fields are float32. The added line textures retain no extra converted
++CPU field arrays; GPU/driver allocations are separate from application cache
++accounting. ANYpost accounts its retained display conversion under its reader
++cache ceiling.
++
++GPU Tk and Qt hosts support these line fields. Software hosts explicitly
++refuse mapped element scalar/active fields and node scalar line fields before
++attachment or mutation. Automatic Qt software fallback similarly reports the
++refusal instead of attaching an unsupported field. Opt-in small host checks
++are `ANY3DVIEW_RUN_BEAM_HOST_TESTS=1 pytest tests/test_beam_hosts.py`.
++
++`MeshHandle.update_scalar_fields(node_scalars=..., element_scalars=...)` validates both scalar domains together before one scalar generation/redraw. An optional `before_publish(candidate)` reservation hook runs after backend acceptance. Validation or reservation refusal preserves the prior mesh and generations; geometry/deformation buffers remain retained. Existing single-domain setters are unchanged.
++
++If an atomic scalar change callback raises after publication, the handle restores its old mesh and advances the scalar generation again. It does not invoke the failing callback again; the next draw/update resynchronizes the display. Validation/reservation refusal still precedes publication and leaves mesh/generation unchanged.
++
++ANY3dView0.5.6 adds retained scalar appearance updates:
++`handle.update_appearance(scalar_range=(minimum,maximum),
++colormap=((0.0,'#0000ff'),(0.5,'#00ff00'),(1.0,'#ff0000')))`.
++Both arguments are optional; omitted values stayunchanged and explicitNone restores
++auto scalar limits/default palette. `add_mesh_arrays` accepts the same initial
++options; `handle.appearance` is an immutable validated snapshot. Ranges must be
++finite and ordered; palette positions are finite ordered0..1 values and colors
++RGB hex. Equalpositions select the rightmost stop at that position. Updates run
++on the owner thread, refuse removed handles, and validate before publication.
++Callback failure restores old appearance with a fresh monotonic generation;
++consumers redraw/replay from the authoritative handle on the next draw/update.
++
++GPU updates scalar-range uniforms and the existing256-entry palette texture only;
++geometry, topology, deformation/scalar buffers, owners and integerpick structures
++are retained. Palette/appearance update counters are reported separately from
++geometry uploads. Qtsoftware uses the same stop interpolation for supported
++triangle scalar fields; unsupported mapped line fields remain explicit refusals.
++Appearance persists through renderer recreation/animation snapshots. This is
++rendering metadata; engineering result arrays and source certification are untouched.
++A failed palette upload is restored best-effort and marks all palette textures
++for a full retry; the original GPU exception is retained. Initial palette failure
++releases unpublished retained resources. The earlier239B wheel is superseded.
+diff --git a/pyproject.toml b/pyproject.toml
+index 4a4ea45..14895d2 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
+ 
+ [project]
+ name = "ANY3dView"
+-version = "0.5.5"
++version = "0.5.6"
+ description = "Backend-neutral geometry, camera, shading, clipping and selection core for scientific 3D viewers"
+ readme = "README.md"
+ license = "MPL-2.0"
+diff --git a/src/any3dview/__init__.py b/src/any3dview/__init__.py
+index 0fbd81e..33fb132 100644
+--- a/src/any3dview/__init__.py
++++ b/src/any3dview/__init__.py
+@@ -110,3 +110,6 @@ __all__ = [
+     "shading",
+     "shapes",
+ ]
++
++from .appearance import MeshAppearance
++__all__ += ['MeshAppearance']
+diff --git a/src/any3dview/adapters/anygeometry/__init__.py b/src/any3dview/adapters/anygeometry/__init__.py
+index c37e9b8..38b97a0 100644
+--- a/src/any3dview/adapters/anygeometry/__init__.py
++++ b/src/any3dview/adapters/anygeometry/__init__.py
+@@ -1,4 +1,4 @@
+-"""Optional ANYgeometry 0.4/schema-4 display adapter."""
++"""Optional ANYgeometry display adapter using owner evaluation for schemas 4/5."""
+ 
+ from .layer import GeometryLayer
+ from .policy import DisplayMode, DisplayPolicy, TessellationPolicy
+diff --git a/src/any3dview/adapters/anygeometry/layer.py b/src/any3dview/adapters/anygeometry/layer.py
+index fbd0666..68f8532 100644
+--- a/src/any3dview/adapters/anygeometry/layer.py
++++ b/src/any3dview/adapters/anygeometry/layer.py
+@@ -1,4 +1,4 @@
+-"""Incremental renderer-neutral layer for ANYgeometry schema-4 models."""
++"""Incremental renderer-neutral layer for ANYgeometry owner-decoded models."""
+ 
+ from __future__ import annotations
+ 
+diff --git a/src/any3dview/arrays.py b/src/any3dview/arrays.py
+index 9d37525..181b072 100644
+--- a/src/any3dview/arrays.py
++++ b/src/any3dview/arrays.py
+@@ -89,6 +89,8 @@ class MeshArrays:
+     # Optional unit normals, one per position, used for smooth shading instead
+     # of the per-triangle normal.  They describe the undeformed geometry.
+     normals: Optional[np.ndarray] = None
++    # Explicit dense element-table index per line; appended for positional ABI.
++    line_to_element: Optional[np.ndarray] = None
+ 
+     def __post_init__(self) -> None:
+         positions = _float_array(self.positions, "positions", (None, 3))
+@@ -116,12 +118,24 @@ class MeshArrays:
+         if mapping is not None and len(mapping) != len(triangles):
+             raise ValueError("triangle_to_element must have one value per triangle")
+ 
++        if self.line_to_element is not None and np.asarray(self.line_to_element).dtype.kind not in "iu":
++            raise ValueError("line_to_element must contain integer indices")
++        line_mapping = None if self.line_to_element is None else _index_array(self.line_to_element,"line_to_element",None)
++        if line_mapping is not None and len(line_mapping) != (0 if lines is None else len(lines)):
++            raise ValueError("line_to_element must have one value per line")
++
+         explicit_lengths = [
+             len(value)
+             for value in (self.element_ids, self.element_scalars, self.active_elements)
+             if value is not None
+         ]
+-        if mapping is not None and mapping.size:
++        if line_mapping is not None:
++            triangle_extent = int(mapping.max())+1 if mapping is not None and mapping.size else len(triangles) if mapping is None else 0
++            mapped_extent = max(triangle_extent,int(line_mapping.max())+1 if line_mapping.size else 0)
++            element_count = explicit_lengths[0] if explicit_lengths else mapped_extent
++            if any(length != element_count for length in explicit_lengths) or mapped_extent > element_count:
++                raise ValueError("element fields do not match explicit triangle/line mappings")
++        elif mapping is not None and mapping.size:
+             element_count = int(mapping.max()) + 1
+             if explicit_lengths and any(length != element_count for length in explicit_lengths):
+                 raise ValueError("element fields do not match triangle_to_element")
+@@ -165,6 +179,7 @@ class MeshArrays:
+             ("lines", lines),
+             ("point_indices", points),
+             ("triangle_to_element", mapping),
++            ("line_to_element", line_mapping),
+             ("node_ids", node_ids),
+             ("element_ids", element_ids),
+             ("displacements", displacements),
+@@ -185,6 +200,11 @@ class MeshArrays:
+ 
+     @property
+     def element_count(self) -> int:
++        if self.line_to_element is not None:
++            for value in (self.element_ids,self.element_scalars,self.active_elements):
++                if value is not None:return len(value)
++            triangle_extent = int(self.triangle_to_element.max())+1 if self.triangle_to_element is not None and self.triangle_to_element.size else self.triangle_count if self.triangle_to_element is None else 0
++            return max(triangle_extent,int(self.line_to_element.max())+1 if self.line_to_element.size else 0)
+         if self.triangle_to_element is not None and self.triangle_to_element.size:
+             return int(self.triangle_to_element.max()) + 1
+         for value in (self.element_ids, self.element_scalars, self.active_elements):
+diff --git a/src/any3dview/contracts.py b/src/any3dview/contracts.py
+index 9de1884..4fbaf95 100644
+--- a/src/any3dview/contracts.py
++++ b/src/any3dview/contracts.py
+@@ -27,6 +27,17 @@ from .shading import Light
+ from .shapes import Mesh
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class PresentedFrame:
++    """One successfully swapped frame, timed with ``perf_counter_ns``.
++
++    This measures host presentation completion, not the display's scan-out time.
++    """
++
++    sequence: int
++    presented_ns: int
++
++
+ @dataclass(frozen=True, slots=True)
+ class Pick:
+     """Legacy tag-based hit returned by click and hover callbacks."""
+diff --git a/src/any3dview/gpu/renderer.py b/src/any3dview/gpu/renderer.py
+index ea46cd4..1d6adfd 100644
+--- a/src/any3dview/gpu/renderer.py
++++ b/src/any3dview/gpu/renderer.py
+@@ -4,7 +4,7 @@ from __future__ import annotations
+ 
+ from dataclasses import dataclass
+ import os
+-from functools import lru_cache
++from functools import lru_cache, wraps
+ import math
+ import re
+ from typing import Any, Optional, Sequence
+@@ -19,9 +19,49 @@ except ImportError as error:  # pragma: no cover - isolated-wheel coverage
+     ) from error
+ 
+ from ..arrays import MeshArrays
++from ..appearance import validated_appearance,palette_data
+ from ..clipping import SectionPlane
+ from ..core import Camera3D, _interpolate_thickness_color, parse_color
+ from ..retained import DirtyGenerations, MeshHandle
++
++
++class _ResourceStage:
++    """Own successfully returned GL allocations until a build commits."""
++    _factories = frozenset({"buffer","texture","vertex_array","depth_renderbuffer","framebuffer"})
++
++    def __init__(self,ctx):
++        self.ctx=ctx
++        self.resources=[]
++
++    def __getattr__(self,name):
++        value=getattr(self.ctx,name)
++        if name not in self._factories:return value
++        def allocate(*args,**kwargs):
++            resource=value(*args,**kwargs)
++            self.resources.append(resource)
++            return resource
++        return allocate
++
++    def release(self):
++        for resource in reversed(self.resources):
++            try:resource.release()
++            except BaseException:pass  # preserve the primary allocation failure
++        self.resources.clear()
++
++
++def _release_failed_allocations(method):
++    @wraps(method)
++    def build(cls,ctx,*args,**kwargs):
++        stage=_ResourceStage(ctx)
++        try:
++            result=method(cls,stage,*args,**kwargs)
++            result.ctx=ctx
++            stage.resources.clear()
++            return result
++        except BaseException:
++            stage.release()
++            raise
++    return build
+ from ..shading import Light
+ 
+ 
+@@ -328,14 +368,22 @@ uniform float u_near;
+ // with round caps drawn as a triangle fan of 2 * (k + 1) + 2 vertices, which
+ // fills the wedge at a polyline joint and keeps the rim antialiased by MSAA.
+ uniform int u_cap_segments;
++uniform bool u_node_scalars;
++uniform sampler2D u_node_values;
++uniform uint u_node_width;
++in uvec2 in_endpoint_nodes;
+ in vec3 in_start;
+ in vec3 in_end;
+ in vec3 in_start_displacement;
+ in vec3 in_end_displacement;
+ out vec3 v_relative;
+ out float v_depth;
++out float v_node_scalar;
+ flat out uint v_primitive;
++ivec2 node_address(uint index) {return ivec2(int(index % u_node_width),int(index / u_node_width));}
+ void main() {
++    float start_scalar = u_node_scalars ? texelFetch(u_node_values,node_address(in_endpoint_nodes.x),0).r : 0.0;
++    float end_scalar = u_node_scalars ? texelFetch(u_node_values,node_address(in_endpoint_nodes.y),0).r : 0.0;
+     vec3 start = u_linear * (in_start + u_deformation_scale * in_start_displacement)
+         + u_origin_from_camera;
+     vec3 end = u_linear * (in_end + u_deformation_scale * in_end_displacement)
+@@ -347,10 +395,12 @@ void main() {
+     bool segment_visible = start_depth >= u_near || end_depth >= u_near;
+     if (segment_visible && start_depth < u_near) {
+         float amount = (u_near - start_depth) / (end_depth - start_depth);
++        start_scalar = mix(start_scalar,end_scalar,amount);
+         start = mix(start, end, amount);
+         view_start = mix(view_start, view_end, amount);
+     } else if (segment_visible && end_depth < u_near) {
+         float amount = (u_near - end_depth) / (start_depth - end_depth);
++        end_scalar = mix(end_scalar,start_scalar,amount);
+         end = mix(end, start, amount);
+         view_end = mix(view_end, view_start, amount);
+     }
+@@ -394,6 +444,7 @@ void main() {
+     float depth_start = -view_start.z;
+     float depth_end = -view_end.z;
+     v_depth = centre ? 0.5 * (depth_start + depth_end) : (at_end ? depth_end : depth_start);
++    v_node_scalar = centre ? 0.5*(start_scalar+end_scalar) : (at_end ? end_scalar : start_scalar);
+     v_primitive = uint(gl_InstanceID);
+ }
+ """
+@@ -401,6 +452,19 @@ void main() {
+ _LINE_FRAGMENT = """
+ #version 330
+ uniform vec3 u_color;
++uniform vec3 u_invalid_color;
++uniform vec3 u_selection_color;
++uniform bool u_has_scalars;
++uniform bool u_node_scalars;
++uniform bool u_has_line_mapping;
++uniform vec2 u_scalar_range;
++uniform uint u_element_width;
++uniform usampler2D u_line_to_element;
++uniform usampler2D u_active_elements;
++uniform usampler2D u_selected_elements;
++uniform usampler2D u_semantic_elements;
++uniform sampler2D u_element_scalars;
++uniform sampler2D u_colormap;
+ uniform vec3 u_highlight_color;
+ uniform vec3 u_preselection_color;
+ uniform float u_opacity;
+@@ -411,6 +475,7 @@ uniform vec3 u_section_normal;
+ uniform float u_section_relative_offset;
+ in vec3 v_relative;
+ in float v_depth;
++in float v_node_scalar;
+ flat in uint v_primitive;
+ //@OIT_EMIT@
+ ivec2 address(uint index, uint width) {
+@@ -418,21 +483,39 @@ ivec2 address(uint index, uint width) {
+ }
+ void main() {
+     if (u_section_enabled && dot(u_section_normal, v_relative) < u_section_relative_offset) discard;
++    uint element = u_has_line_mapping ? texelFetch(u_line_to_element,address(v_primitive,u_line_width),0).r : 0u;
++    if (u_has_line_mapping && texelFetch(u_active_elements,address(element,u_element_width),0).r == 0u) discard;
+     vec3 color = u_color;
++    if (u_has_scalars && (u_node_scalars || u_has_line_mapping)) {
++        float value = u_node_scalars ? v_node_scalar : texelFetch(u_element_scalars,address(element,u_element_width),0).r;
++        if (isnan(value)) color = u_invalid_color;
++        else {
++            float span = max(1.0e-20,u_scalar_range.y-u_scalar_range.x);
++            color = texture(u_colormap,vec2(clamp((value-u_scalar_range.x)/span,0.0,1.0),0.5)).rgb;
++        }
++    }
+     uint semantic = texelFetch(
+         u_semantic_lines, address(v_primitive, u_line_width), 0
+     ).r;
++    if (u_has_line_mapping) semantic |= texelFetch(u_semantic_elements,address(element,u_element_width),0).r;
+     if ((semantic & 4u) != 0u) discard;
+     if ((semantic & 2u) != 0u)
+         color = mix(color, u_preselection_color, 0.85);
+     else if ((semantic & 1u) != 0u)
+         color = mix(color, u_highlight_color, 0.80);
++    else if (u_has_line_mapping && texelFetch(u_selected_elements,address(element,u_element_width),0).r != 0u)
++        color = mix(color,u_selection_color,0.65);
+     emit_color(color, u_opacity, v_depth);
+ }
+ """
+ 
+ _LINE_PICK_FRAGMENT = """
+ #version 330
++uniform bool u_has_line_mapping;
++uniform uint u_element_width;
++uniform usampler2D u_line_to_element;
++uniform usampler2D u_active_elements;
++uniform usampler2D u_semantic_elements;
+ uniform bool u_section_enabled;
+ uniform vec3 u_section_normal;
+ uniform float u_section_relative_offset;
+@@ -450,6 +533,11 @@ void main() {
+     uint semantic = texelFetch(
+         u_semantic_lines, address(v_primitive, u_line_width), 0
+     ).r;
++    if (u_has_line_mapping) {
++        uint element = texelFetch(u_line_to_element,address(v_primitive,u_line_width),0).r;
++        if (texelFetch(u_active_elements,address(element,u_element_width),0).r == 0u) discard;
++        semantic |= texelFetch(u_semantic_elements,address(element,u_element_width),0).r;
++    }
+     if ((semantic & 4u) != 0u) discard;
+     if (u_section_enabled && dot(u_section_normal, v_relative) < u_section_relative_offset) discard;
+     pick_id = u_pick_enabled ? u_pick_base + v_primitive + 1u : 0u;
+@@ -775,8 +863,13 @@ class _Chunk:
+     # True when some vertex is shared by two or more lines, i.e. the chunk has
+     # joints whose overlap must be unioned when it is drawn translucent.
+     lines_joined: bool = False
++    line_endpoint_buffer: Any = None
++    line_element_map: Any = None
++    node_scalar_texture: Any = None
++    node_scalar_width: int = 1
+ 
+     @classmethod
++    @_release_failed_allocations
+     def create(
+         cls,
+         ctx: Any,
+@@ -841,6 +934,9 @@ class _Chunk:
+         render_vao = ctx.vertex_array(render_program, render_content, index_buffer)
+         pick_vao = ctx.vertex_array(pick_program, geometry_content, index_buffer)
+         line_buffer = None
++        line_endpoint_buffer = None
++        node_scalar_texture = None
++        node_scalar_width = 1
+         line_render_vao = None
+         line_pick_vao = None
+         if mesh.lines is not None and len(mesh.lines):
+@@ -856,7 +952,9 @@ class _Chunk:
+                     "in_end_displacement",
+                 )
+             ]
+-            line_render_vao = ctx.vertex_array(line_program, line_content)
++            line_endpoint_buffer = ctx.buffer(np.ascontiguousarray(mesh.lines,dtype=np.uint32).tobytes())
++            node_scalar_texture,node_scalar_width = _packed_texture(ctx,node_scalar_values,"f4")
++            line_render_vao = ctx.vertex_array(line_program,[*line_content,(line_endpoint_buffer,"2u /i","in_endpoint_nodes")])
+             line_pick_vao = ctx.vertex_array(line_pick_program, line_content)
+         point_index_buffer = None
+         point_render_vao = None
+@@ -875,6 +973,8 @@ class _Chunk:
+             else mesh.triangle_to_element.astype(np.uint32, copy=False)
+         )
+         triangle_map, triangle_width = _packed_texture(ctx, mapping, "u4")
++        line_mapping = np.zeros(0 if mesh.lines is None else len(mesh.lines),dtype=np.uint32) if mesh.line_to_element is None else mesh.line_to_element
++        line_element_map,_ = _packed_texture(ctx,line_mapping,"u4")
+         active_values = (
+             np.ones(mesh.element_count, dtype=np.uint32)
+             if mesh.active_elements is None
+@@ -925,6 +1025,11 @@ class _Chunk:
+             palette[index] = _rgb(_interpolate_thickness_color(value, 0.0, 1.0))
+         colormap = ctx.texture((256, 1), 3, palette.tobytes(), dtype="f4")
+         colormap.filter = (moderngl.LINEAR, moderngl.LINEAR)
++        # A scalar palette is a bounded scale, not a repeating surface texture.
++        # Linear filtering at 0/1 otherwise blends opposite endpoint texels and
++        # gives the minimum and maximum the same colour.
++        colormap.repeat_x = False
++        colormap.repeat_y = False
+         resolved_face_colors: list[str] = []
+         if face_colors:
+             if len(face_colors) == mesh.triangle_count:
+@@ -980,6 +1085,10 @@ class _Chunk:
+                     minlength=mesh.node_count,
+                 ).max() > 1
+             ),
++            line_endpoint_buffer,
++            line_element_map,
++            node_scalar_texture,
++            node_scalar_width,
+         )
+ 
+     @staticmethod
+@@ -1010,6 +1119,9 @@ class _Chunk:
+             self.line_render_vao,
+             self.line_pick_vao,
+             self.line_buffer,
++            self.line_endpoint_buffer,
++            self.line_element_map,
++            self.node_scalar_texture,
+             self.point_render_vao,
+             self.point_pick_vao,
+             self.point_index_buffer,
+@@ -1058,10 +1170,30 @@ class _Chunk:
+                     set_uniform(program, name, value)
+ 
+     def bind_line_semantics(self, program: Any, set_uniform: Any = None) -> None:
++        self.active.use(location=1)
++        self.selected.use(location=2)
++        self.scalars.use(location=3)
++        self.colormap.use(location=4)
++        self.semantic_elements.use(location=7)
++        self.line_element_map.use(location=8)
++        if self.node_scalar_texture is not None:self.node_scalar_texture.use(location=9)
+         self.semantic_lines.use(location=6)
+         for name, value in (
+             ("u_semantic_lines", 6),
+             ("u_line_width", self.line_semantic_width),
++            ("u_line_to_element",8),
++            ("u_active_elements",1),
++            ("u_selected_elements",2),
++            ("u_element_scalars",3),
++            ("u_colormap",4),
++            ("u_semantic_elements",7),
++            ("u_element_width",self.element_width),
++            ("u_has_line_mapping",self.mesh.line_to_element is not None),
++            ("u_node_values",9),
++            ("u_node_width",self.node_scalar_width),
++            ("u_has_scalars",self.has_scalars),
++            ("u_node_scalars",self.node_scalars),
++            ("u_scalar_range",self.scalar_range),
+         ):
+             if _has_uniform(program, name):
+                 if set_uniform is None:
+@@ -1106,6 +1238,7 @@ class _Group:
+     back_color: str
+     invalid_color: str
+     scalar_range: Optional[tuple[float, float]]
++    colormap: object
+     highlighted_elements: np.ndarray
+     preselected_elements: np.ndarray
+     hidden_elements: np.ndarray
+@@ -1119,6 +1252,8 @@ class _Group:
+     chunk_semantic_masks: dict[object, dict[str, np.ndarray]]
+     generations: DirtyGenerations
+     chunks: list[tuple[object, _Chunk]]
++    palette_dirty: bool = False
++    visible: bool = True
+ 
+ 
+ @dataclass(slots=True)
+@@ -1200,6 +1335,10 @@ class ModernGLRenderer:
+         self.frame_count = 0
+         self.geometry_uploads = 0
+         self.semantic_buffer_updates = 0
++        self.scalar_buffer_updates = 0
++        self.palette_updates = 0
++        self.appearance_updates = 0
++        self.palette_write_failures = 0
+ 
+     def _set_uniform_value(self, program: Any, name: str, value: object) -> None:
+         """Avoid repeating unchanged scalar/vector uniform calls each frame."""
+@@ -1235,33 +1374,11 @@ class ModernGLRenderer:
+         back_color: str = "",
+         invalid_color: str = "#808080",
+         scalar_range: Optional[tuple[float, float]] = None,
++        colormap: object = None,
+     ) -> None:
+-        self.remove_mesh(handle)
+-        chunks = [
+-            (
+-                chunk_id,
+-                _Chunk.create(
+-                    self.ctx,
+-                    mesh,
+-                    handle,
+-                    self.render_program,
+-                    self.pick_program,
+-                    self.line_program,
+-                    self.line_pick_program,
+-                    self.point_program,
+-                    self.point_pick_program,
+-                    color,
+-                    tuple(str(value) for value in face_colors)
+-                    if face_colors is not None and chunk_id is None else None,
+-                ),
+-            )
+-            for chunk_id, mesh in [(None, handle.mesh), *handle.chunks]
+-        ]
+-        self._groups[id(handle)] = _Group(
+-            handle,
+-            color,
+-            line_color,
+-            point_color,
++        appearance=validated_appearance(scalar_range,colormap)
++        # Reject invalid scalar options before replacing published resources.
++        group_style = (
+             str(point_outline),
+             max(0.5, float(line_width)),
+             max(1.0, float(point_size)),
+@@ -1276,37 +1393,84 @@ class ModernGLRenderer:
+             bool(depth_only),
+             int(layer),
+             bool(mesh_lines),
+-            None if face_colors is None else tuple(str(value) for value in face_colors),
+-            str(back_color),
+-            str(invalid_color),
+-            None if scalar_range is None else (float(scalar_range[0]), float(scalar_range[1])),
+-            np.empty(0, dtype=np.uint32),
+-            np.empty(0, dtype=np.uint32),
+-            np.empty(0, dtype=np.uint32),
+-            np.empty(0, dtype=np.uint32),
+-            np.empty(0, dtype=np.uint32),
+-            np.empty(0, dtype=np.uint32),
+-            np.empty(0, dtype=np.uint32),
+-            np.empty(0, dtype=np.uint32),
+-            np.empty(0, dtype=np.uint32),
+-            set(),
+-            {},
+-            handle.generations,
+-            chunks,
+-        )
+-        # Primary semantic/application element indices do not name unrelated
+-        # incremental chunks until a chunk-local ownership contract exists.
+-        self._write_selection(self._groups[id(handle)])
++        )
++        back_color = str(back_color)
++        invalid_color = str(invalid_color)
++        self.remove_mesh(handle)
++        chunks = []
++        try:
++            for chunk_id, mesh in [(None, handle.mesh), *handle.chunks]:
++                chunk = _Chunk.create(
++                    self.ctx, mesh, handle, self.render_program, self.pick_program,
++                    self.line_program, self.line_pick_program, self.point_program,
++                    self.point_pick_program, color,
++                    tuple(str(value) for value in face_colors)
++                    if face_colors is not None and chunk_id is None else None,
++                )
++                chunks.append((chunk_id, chunk))
++        except BaseException:
++            for _chunk_id, chunk in chunks:
++                try:chunk.release()
++                except BaseException:pass
++            raise
++        try:
++            self._groups[id(handle)] = _Group(
++                handle,
++                color,
++                line_color,
++                point_color,
++                *group_style,
++                None if face_colors is None else tuple(str(value) for value in face_colors),
++                back_color,
++                invalid_color,
++                appearance.scalar_range,
++                appearance.colormap,
++                np.empty(0, dtype=np.uint32),
++                np.empty(0, dtype=np.uint32),
++                np.empty(0, dtype=np.uint32),
++                np.empty(0, dtype=np.uint32),
++                np.empty(0, dtype=np.uint32),
++                np.empty(0, dtype=np.uint32),
++                np.empty(0, dtype=np.uint32),
++                np.empty(0, dtype=np.uint32),
++                np.empty(0, dtype=np.uint32),
++                set(),
++                {},
++                handle.generations,
++                chunks,
++            )
++            self._groups[id(handle)].visible = bool(handle.visible)
++        except BaseException:
++            self._groups.pop(id(handle),None)
++            for _chunk_id,chunk in chunks:
++                try:chunk.release()
++                except BaseException:pass
++            raise
++        self.pick_dirty = True
++        try:
++            if appearance.colormap is not None:
++                data=palette_data(appearance.colormap)
++                for _chunk_id,chunk in chunks:chunk.colormap.write(data);self.palette_updates+=1
++            # Primary indices do not name unrelated incremental chunks.
++            self._write_selection(self._groups[id(handle)])
++        except BaseException:
++            try:self.remove_mesh(handle)
++            except BaseException:pass  # retain the primary initialization error
++            raise
+         self.geometry_uploads += len(chunks)
+         self.pick_dirty = True
+ 
+     def remove_mesh(self, handle: MeshHandle) -> None:
+         group = self._groups.pop(id(handle), None)
+         if group is not None:
++            self.pick_dirty = True
++            first_error = None
+             for _chunk_id, chunk in group.chunks:
+                 self._world_bounds_cache.pop(id(chunk), None)
+-                chunk.release()
+-            self.pick_dirty = True
++                try:chunk.release()
++                except BaseException as error:
++                    if first_error is None:first_error=error
++            if first_error is not None:raise first_error
+ 
+     @staticmethod
+     def _write_selection(group: _Group) -> None:
+@@ -1645,6 +1809,12 @@ class ModernGLRenderer:
+     def _sync(self, group: _Group) -> None:
+         current = group.handle.generations
+         previous = group.generations
++        if bool(group.handle.visible) != group.visible or any(
++                getattr(current,name) != getattr(previous,name)
++                for name in current.__dataclass_fields__ if name not in {"scalar","appearance"}):
++            # Fallible scalar/palette writes must not leave a previously clean
++            # ID target representing stale visibility, deformation or topology.
++            self.pick_dirty = True
+         if current.topology != previous.topology or current.position != previous.position:
+             semantic_masks = {
+                 "selected_elements": group.highlighted_elements.copy(),
+@@ -1664,52 +1834,69 @@ class ModernGLRenderer:
+                 for chunk_id, state in group.chunk_semantic_masks.items()
+             }
+             chunk_pickable = set(group.chunk_pickable)
+-            self.add_mesh(
+-                group.handle,
+-                group.color,
+-                line_color=group.line_color,
+-                point_color=group.point_color,
+-                point_outline=group.point_outline,
+-                line_width=group.line_width,
+-                point_size=group.point_size,
+-                opacity=group.opacity,
+-                cull_backface=group.cull_backface,
+-                line_overlay=group.line_overlay,
+-                point_overlay=group.point_overlay,
+-                lit=group.lit,
+-                stipple=group.stipple,
+-                stipple_phase=group.stipple_phase,
+-                pickable=group.pickable,
+-                depth_only=group.depth_only,
+-                layer=group.layer,
+-                mesh_lines=group.mesh_lines,
+-                face_colors=group.face_colors,
+-                back_color=group.back_color,
+-                invalid_color=group.invalid_color,
+-                scalar_range=group.scalar_range,
+-            )
+-            self.set_semantic_masks(group.handle, **semantic_masks)
+-            current_chunk_ids = {
+-                chunk_id for chunk_id, *_rest in group.handle.chunk_records
+-            }
+-            for chunk_id in chunk_pickable & current_chunk_ids:
+-                self.set_chunk_pickable(group.handle, chunk_id)
+-            for chunk_id, state in chunk_semantic_masks.items():
+-                if chunk_id not in current_chunk_ids:
+-                    continue
+-                self.set_chunk_semantic_masks(
++            if current.selection != previous.selection:
++                owned_chunk_ids={chunk_id for chunk_id,_mesh,owners,_resolver in group.handle.chunk_records if owners is not None}
++                chunk_semantic_masks={chunk_id:state for chunk_id,state in chunk_semantic_masks.items() if chunk_id in owned_chunk_ids}
++            # Detach, but retain the complete previous group until both the
++            # replacement and its semantic state have been built successfully.
++            self._groups.pop(id(group.handle), None)
++            try:
++                self.add_mesh(
+                     group.handle,
+-                    chunk_id,
+-                    selected_elements=state["highlighted_elements"],
+-                    preselected_elements=state["preselected_elements"],
+-                    hidden_elements=state["hidden_elements"],
+-                    selected_lines=state["highlighted_lines"],
+-                    preselected_lines=state["preselected_lines"],
+-                    hidden_lines=state["hidden_lines"],
+-                    selected_points=state["highlighted_points"],
+-                    preselected_points=state["preselected_points"],
+-                    hidden_points=state["hidden_points"],
++                    group.color,
++                    line_color=group.line_color,
++                    point_color=group.point_color,
++                    point_outline=group.point_outline,
++                    line_width=group.line_width,
++                    point_size=group.point_size,
++                    opacity=group.opacity,
++                    cull_backface=group.cull_backface,
++                    line_overlay=group.line_overlay,
++                    point_overlay=group.point_overlay,
++                    lit=group.lit,
++                    stipple=group.stipple,
++                    stipple_phase=group.stipple_phase,
++                    pickable=group.pickable,
++                    depth_only=group.depth_only,
++                    layer=group.layer,
++                    mesh_lines=group.mesh_lines,
++                    face_colors=group.face_colors,
++                    back_color=group.back_color,
++                    invalid_color=group.invalid_color,
++                    scalar_range=group.handle.appearance.scalar_range,
++                    colormap=group.handle.appearance.colormap,
+                 )
++                self.set_semantic_masks(group.handle, **semantic_masks)
++                current_chunk_ids = {
++                    chunk_id for chunk_id, *_rest in group.handle.chunk_records
++                }
++                for chunk_id in chunk_pickable & current_chunk_ids:
++                    self.set_chunk_pickable(group.handle, chunk_id)
++                for chunk_id, state in chunk_semantic_masks.items():
++                    if chunk_id not in current_chunk_ids:
++                        continue
++                    self.set_chunk_semantic_masks(
++                        group.handle,
++                        chunk_id,
++                        selected_elements=state["highlighted_elements"],
++                        preselected_elements=state["preselected_elements"],
++                        hidden_elements=state["hidden_elements"],
++                        selected_lines=state["highlighted_lines"],
++                        preselected_lines=state["preselected_lines"],
++                        hidden_lines=state["hidden_lines"],
++                        selected_points=state["highlighted_points"],
++                        preselected_points=state["preselected_points"],
++                        hidden_points=state["hidden_points"],
++                    )
++            except BaseException:
++                try:self.remove_mesh(group.handle)
++                except BaseException:pass  # keep the primary rebuild error
++                self._groups[id(group.handle)] = group
++                self.pick_dirty = True
++                raise
++            for _chunk_id, old_chunk in group.chunks:
++                self._world_bounds_cache.pop(id(old_chunk), None)
++                old_chunk.release()
+             return
+         sources = {chunk_id: mesh for chunk_id, mesh in [(None, group.handle.mesh), *group.handle.chunks]}
+         if current.displacement != previous.displacement:
+@@ -1779,6 +1966,13 @@ class ModernGLRenderer:
+                 chunk.node_scalar_buffer.write(
+                     np.ascontiguousarray(node_values).tobytes()
+                 )
++                self.scalar_buffer_updates += 2
++                if chunk.node_scalar_texture is not None:
++                    size = chunk.node_scalar_width*max(1,math.ceil(len(node_values)/chunk.node_scalar_width))
++                    padded_nodes = np.zeros(size,dtype=np.float32)
++                    padded_nodes[:len(node_values)] = node_values
++                    chunk.node_scalar_texture.write(padded_nodes.tobytes())
++                    self.scalar_buffer_updates += 1
+                 range_values = values if mesh.element_scalars is not None else node_values
+                 finite = range_values[np.isfinite(range_values)]
+                 chunk.scalar_range = (
+@@ -1790,10 +1984,33 @@ class ModernGLRenderer:
+                 chunk.node_scalars = (
+                     mesh.element_scalars is None and mesh.node_scalars is not None
+                 )
++        if current.appearance != previous.appearance or group.palette_dirty:
++            appearance=group.handle.appearance
++            if appearance.colormap!=group.colormap or group.palette_dirty:
++                data=palette_data(appearance.colormap)
++                rollback=palette_data(group.colormap)
++                try:
++                    for _chunk_id,chunk in group.chunks:
++                        chunk.colormap.write(data);self.palette_updates+=1
++                except BaseException:
++                    # A failed write may already have changed any texture.
++                    # Restore best-effort now and force a complete next sync;
++                    # preserve the primary GPU error if restoration also fails.
++                    group.palette_dirty=True;self.palette_write_failures+=1
++                    for _chunk_id,chunk in group.chunks:
++                        try:chunk.colormap.write(rollback);self.palette_updates+=1
++                        except BaseException:pass
++                    raise
++                group.palette_dirty=False
++            group.scalar_range=appearance.scalar_range;group.colormap=appearance.colormap
++            self.appearance_updates+=1
+         for chunk_id, chunk in group.chunks:
+             chunk.mesh = sources[chunk_id]
+         group.generations = current
+-        self.pick_dirty = True
++        visible = bool(group.handle.visible)
++        if visible != group.visible or any(getattr(current,name)!=getattr(previous,name) for name in current.__dataclass_fields__ if name not in {"scalar","appearance"}):
++            self.pick_dirty = True
++        group.visible = visible
+ 
+     @staticmethod
+     def _camera_frame(
+@@ -2162,7 +2379,10 @@ class ModernGLRenderer:
+             ctx.disable(moderngl.DEPTH_TEST)
+         self._uniforms(program, chunk, frame)
+         chunk.bind_line_semantics(program, self._set_uniform_value)
++        if "u_scalar_range" in program:self._set_uniform_value(program,"u_scalar_range",group.scalar_range or chunk.scalar_range)
+         self._set_uniform_value(program, "u_color", _rgb(group.line_color))
++        self._set_uniform_value(program,"u_invalid_color",_rgb(group.invalid_color))
++        self._set_uniform_value(program,"u_selection_color",_rgb(selection_color))
+         self._set_uniform_value(program, "u_highlight_color", _rgb(selection_color))
+         self._set_uniform_value(
+             program, "u_preselection_color", _rgb(preselection_color)
+@@ -2712,15 +2932,20 @@ class ModernGLRenderer:
+     def _ensure_pick_target(self, viewport: tuple[int, int]) -> None:
+         if viewport == self._pick_size:
+             return
+-        for resource in (self._pick_fbo, self._pick_texture, self._pick_depth):
+-            if resource is not None:
+-                resource.release()
+-        self._pick_texture = self.ctx.texture(viewport, 1, dtype="u4")
+-        self._pick_depth = self.ctx.depth_renderbuffer(viewport)
+-        self._pick_fbo = self.ctx.framebuffer(
+-            color_attachments=[self._pick_texture], depth_attachment=self._pick_depth
+-        )
++        self.pick_dirty = True
++        stage=_ResourceStage(self.ctx)
++        try:
++            texture=stage.texture(viewport,1,dtype="u4")
++            depth=stage.depth_renderbuffer(viewport)
++            framebuffer=stage.framebuffer(color_attachments=[texture],depth_attachment=depth)
++        except BaseException:
++            stage.release()
++            raise
++        previous=(self._pick_fbo,self._pick_texture,self._pick_depth)
++        self._pick_texture,self._pick_depth,self._pick_fbo=texture,depth,framebuffer
+         self._pick_size = viewport
++        for resource in previous:
++            if resource is not None:resource.release()
+         self.pick_dirty = True
+ 
+     def render_pick(
+@@ -2732,6 +2957,9 @@ class ModernGLRenderer:
+         occlude_lines: bool = True,
+         primitive_kinds: Optional[Sequence[str]] = None,
+     ) -> None:
++        # Resize, clear, sync and draw are fallible. Only a complete pass below
++        # may mark the target clean, including an explicitly requested redraw.
++        self.pick_dirty = True
+         included_kinds = (
+             _ALL_PICK_KINDS
+             if primitive_kinds is None
+diff --git a/src/any3dview/gpu/widget.py b/src/any3dview/gpu/widget.py
+index 5137bb4..052284b 100644
+--- a/src/any3dview/gpu/widget.py
++++ b/src/any3dview/gpu/widget.py
+@@ -9,6 +9,7 @@ import time
+ import tkinter as tk
+ from tkinter import ttk
+ from dataclasses import replace
++from threading import get_ident
+ from typing import Any, Callable, Iterable, Optional, Sequence
+ 
+ import numpy as np
+@@ -23,7 +24,7 @@ except ImportError as error:  # pragma: no cover - isolated-wheel coverage
+ from ..arrays import MeshArrays
+ from ..capabilities import ViewerCapabilities
+ from ..clipping import SectionPlane
+-from ..contracts import Pick, ViewerState
++from ..contracts import Pick, PresentedFrame, ViewerState
+ from ..core import (
+     Camera3D,
+     Point3D,
+@@ -115,6 +116,9 @@ class Any3DView(RetainedViewer, ttk.Frame):
+         **canvas_kwargs: Any,
+     ) -> None:
+         super().__init__(master, **canvas_kwargs)
++        self._presentation_owner = get_ident()
++        self._presented_frame_sequence = 0
++        self._frame_presented_listeners: list[Callable[[PresentedFrame], None]] = []
+         self.camera = Camera3D()
+         self.width = max(1, int(width))
+         self.height = max(1, int(height))
+@@ -339,9 +343,45 @@ class Any3DView(RetainedViewer, ttk.Frame):
+         except Exception:
+             return 1.0
+ 
++    @property
++    def presented_frame_sequence(self) -> int:
++        """Number of completed host buffer swaps for this widget."""
++        return self._presented_frame_sequence
++
++    def add_frame_presented_listener(
++        self, callback: Callable[[PresentedFrame], None]
++    ) -> Callable[[], None]:
++        """Listen after successful swaps; registration/removal owns the UI thread.
++
++        The returned callable removes this subscription. Listener failures are
++        reported through Tk's callback error handler without suppressing others.
++        """
++        self._assert_presentation_owner()
++        if self._closed:
++            raise RuntimeError("viewer has been closed")
++        if not callable(callback):
++            raise TypeError("callback must be callable")
++        # A wrapper gives duplicate callback registrations independent lifetimes.
++        def listener(frame: PresentedFrame) -> None:
++            callback(frame)
++
++        self._frame_presented_listeners.append(listener)
++
++        def unsubscribe() -> None:
++            self._assert_presentation_owner()
++            if listener in self._frame_presented_listeners:
++                self._frame_presented_listeners.remove(listener)
++
++        return unsubscribe
++
++    def _assert_presentation_owner(self) -> None:
++        if get_ident() != self._presentation_owner:
++            raise RuntimeError("frame presentation must run on the viewer owner thread")
++
+     def _draw_now(self) -> None:
+         if self._closed:
+             return
++        self._assert_presentation_owner()
+         self._host.make_current()
+         self._sync_pixel_ratio()
+         size = self._host.framebuffer_size()
+@@ -363,12 +403,24 @@ class Any3DView(RetainedViewer, ttk.Frame):
+         self._render_hud(size)
+         self._host.swap_buffers()
+         self.width, self.height = size
++        self._presented_frame_sequence += 1
++        frame = PresentedFrame(self._presented_frame_sequence, time.perf_counter_ns())
++        for listener in tuple(self._frame_presented_listeners):
++            if self._closed:
++                break
++            if listener not in self._frame_presented_listeners:
++                continue
++            try:
++                listener(frame)
++            except Exception:
++                self._root().report_callback_exception(*sys.exc_info())
+ 
+ 
+     def destroy(self) -> None:
+         if getattr(self, "_closed", True):
+             return
+         self._closed = True
++        self._frame_presented_listeners.clear()
+         self.stop_animation()
+         if self._wheel_finish_after_id is not None:
+             try:
+diff --git a/src/any3dview/qt.py b/src/any3dview/qt.py
+index f047c71..dd54602 100644
+--- a/src/any3dview/qt.py
++++ b/src/any3dview/qt.py
+@@ -8,13 +8,14 @@ from types import SimpleNamespace
+ 
+ import numpy as np
+ from PySide6.QtCore import QPointF, Qt, QTimer, Signal
+-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPolygonF, QSurfaceFormat
++from PySide6.QtGui import QColor, QFont, QImage, QPainter, QOpenGLContext, QPen, QPolygonF, QSurfaceFormat
+ from PySide6.QtWidgets import QWidget, QVBoxLayout
+ from PySide6.QtOpenGLWidgets import QOpenGLWidget
+ 
+ from .core import Point3D, parse_color, _interpolate_thickness_color
++from .appearance import scalar_color
+ from .errors import GPUUnavailableError
+-from .retained_viewer import RetainedViewer, GPU_CAPABILITIES
++from .retained_viewer import RetainedViewer, GPU_CAPABILITIES, _FrameProjection
+ 
+ 
+ class _QtGLLoader:
+@@ -136,6 +137,7 @@ class _InputSurface:
+         return SimpleNamespace(x=round(p.x()*ratio), y=round(p.y()*ratio), state=state)
+ 
+     def mousePressEvent(self, event):
++        self.owner._cancel_hover()
+         self.setFocus()
+         e = self._event(event)
+         if event.button() == Qt.LeftButton:
+@@ -147,9 +149,13 @@ class _InputSurface:
+     def mouseMoveEvent(self, event):
+         e = self._event(event)
+         if event.buttons() & Qt.LeftButton:
++            self.owner._cancel_hover()
+             self.owner._drag_select(e)
+         elif event.buttons():
++            self.owner._cancel_hover()
+             self.owner._motion(e)
++        elif self.owner.backend_name == "software":
++            self.owner._queue_hover(e)
+         else:
+             self.owner._hover_select(e)
+         event.accept()
+@@ -162,6 +168,7 @@ class _InputSurface:
+         event.accept()
+ 
+     def wheelEvent(self, event):
++        self.owner._cancel_hover()
+         self.owner._zoom(0.9 ** (event.angleDelta().y()/120))
+         event.accept()
+ 
+@@ -171,7 +178,16 @@ class _InputSurface:
+         else:
+             super().keyPressEvent(event)
+ 
++    def leaveEvent(self, event):
++        self.owner._cancel_hover()
++        super().leaveEvent(event)
++
++    def hideEvent(self, event):
++        self.owner._cancel_hover()
++        super().hideEvent(event)
++
+     def focusOutEvent(self, event):
++        self.owner._cancel_hover()
+         self.owner._cancel_interaction()
+         super().focusOutEvent(event)
+ 
+@@ -180,11 +196,64 @@ class _PaintSurface(_InputSurface, QWidget):
+     def __init__(self, owner):
+         super().__init__(owner)
+         self.owner = owner
++        self._cached_image = None
++        self._cached_key = None
+         self.setMouseTracking(True)
+         self.setFocusPolicy(Qt.StrongFocus)
+ 
+     def paintEvent(self, event):
+-        self.owner._paint_software(QPainter(self))
++        owner = self.owner
++        if owner._closed:
++            return
++        camera = owner.camera
++        # External camera edits also invalidate the cache, even without an
++        # explicit redraw. Logical size and DPR determine the raster target.
++        key = (owner._software_revision, self.width(), self.height(),
++               self.devicePixelRatioF(), camera.position.to_tuple(),
++               camera.target.to_tuple(), camera.world_up.to_tuple(),
++               camera.fov, camera.near, camera.far, owner.bg)
++        if key != self._cached_key:
++            ratio = self.devicePixelRatioF()
++            image = QImage(max(1,round(self.width()*ratio)),
++                           max(1,round(self.height()*ratio)), QImage.Format_RGBA8888)
++            image.setDevicePixelRatio(ratio)
++            painter = QPainter(image)
++            try:
++                owner._paint_software(painter)
++            finally:
++                if painter.isActive():
++                    painter.end()
++            self._cached_image, self._cached_key = image, key
++        painter = QPainter(self)
++        try:
++            painter.drawImage(QPointF(0,0), self._cached_image)
++        finally:
++            painter.end()
++
++
++def _gl_surface_format():
++    """Keep renderer requirements while honoring the application's swap policy."""
++    fmt = QSurfaceFormat()
++    fmt.setSwapInterval(QSurfaceFormat.defaultFormat().swapInterval())
++    fmt.setVersion(3, 3)
++    fmt.setProfile(QSurfaceFormat.CoreProfile)
++    from .gpu.quality import msaa_samples
++    samples = msaa_samples()
++    if samples > 1:
++        fmt.setSamples(samples)
++    fmt.setDepthBufferSize(24)
++    return fmt
++
++
++def _capture_gl_info(context):
++    """Cache identifying GL strings once, while the context is current."""
++    try:
++        info = context.info
++        return {"vendor": str(info.get("GL_VENDOR", "")),
++                "renderer": str(info.get("GL_RENDERER", "")),
++                "version": str(info.get("GL_VERSION", ""))}
++    except Exception:
++        return {}
+ 
+ 
+ class _GLSurface(_InputSurface, QOpenGLWidget):
+@@ -192,39 +261,90 @@ class _GLSurface(_InputSurface, QOpenGLWidget):
+         super().__init__(owner)
+         self.owner = owner
+         self.error = None
+-        fmt = QSurfaceFormat()
+-        fmt.setVersion(3, 3)
+-        fmt.setProfile(QSurfaceFormat.CoreProfile)
+-        from .gpu.quality import msaa_samples
+-        samples = msaa_samples()
+-        if samples > 1:
+-            fmt.setSamples(samples)
+-        fmt.setDepthBufferSize(24)
++        fmt = _gl_surface_format()
+         self.setFormat(fmt)
+         self.setMouseTracking(True)
+         self.setFocusPolicy(Qt.StrongFocus)
+ 
+     def initializeGL(self):
+         self.error = None
++        owner = self.owner
++        owner._note_lifecycle("initialize_gl_attempts")
+         try:
++            context = self.context()
++            prior = getattr(owner, "_gl_context", None)
++            if prior is context and getattr(owner, "_renderer", None) is not None:
++                if getattr(owner, "_gl_ready", False):
++                    # Qt re-ran initializeGL on the same live context: the
++                    # installed renderer/HUD are still owned and unreleased, so
++                    # re-running the constructor path would only install
++                    # unreleased replacements over them.
++                    owner._note_lifecycle("initialize_gl_repeats")
++                    return
++                # A previous attempt on this same context failed after ownership
++                # was assigned (replay or highlight initialization): partially
++                # initialized resources must not be treated as a successful
++                # repeat. Release them and rebind the context before rebuilding.
++                owner._note_lifecycle("initialize_gl_incomplete_repeats")
++                owner._release_gl(context)
++                self.makeCurrent()
++            if prior is not None and prior is not context:
++                owner._note_lifecycle("context_recreations")
++                # Reconcile prior ownership before installing replacements:
++                # the old token's callback is disconnected and the abandoned
++                # resources are dropped. The old context is no longer this
++                # surface's context, so _release_gl skips unsafe GL calls
++                # and records the abandonment instead of touching the
++                # replacement context.
++                owner._release_gl(prior)
++            import inspect
+             import moderngl
+             from .gpu.renderer import ModernGLRenderer
+             from .gpu.hud import GPUHudRenderer
+-            self.owner._renderer = ModernGLRenderer(moderngl.create_context(
+-                require=330, context=_QtGLLoader(self.context())))
+-            self.owner._hud = GPUHudRenderer(self.owner._renderer.ctx)
+-            self.context().aboutToBeDestroyed.connect(self.owner._release_gl)
++            renderer = ModernGLRenderer(moderngl.create_context(
++                require=330, context=_QtGLLoader(context)))
++            try:
++                hud = GPUHudRenderer(renderer.ctx)
++            except BaseException as error:
++                # The context is current here; release the renderer's
++                # derived resources so a failing HUD constructor cannot
++                # leak them past the ownership token below. The original
++                # constructor error is preserved if this cleanup fails.
++                try:
++                    renderer.release()
++                except BaseException as cleanup_error:
++                    owner._note_lifecycle("gl_release_failures",
++                                           error=cleanup_error)
++                raise
++            owner._renderer = renderer
++            owner._hud = hud
++            owner._gl_context = context
++            owner._gl_info = _capture_gl_info(renderer.ctx)
++            # Store the exact slot and its context so cleanup can
++            # disconnect it (Qt's aboutToBeDestroyed lifecycle contract).
++            # The closure carries the context token: a stale callback for
++            # a replaced context must not release the replacement's
++            # resources.
++            slot = lambda: owner._release_gl(context)
++            owner._gl_destroy_slot = (context, slot)
++            context.aboutToBeDestroyed.connect(slot)
+             # Qt can recreate the context when the widget is reparented.
+             # Re-upload retained snapshots rather than losing the visible scene.
+-            import inspect
+-            accepted=inspect.signature(self.owner._renderer.add_mesh).parameters
+-            for entry in self.owner._display_entries().values():
+-                self.owner._renderer.add_mesh(entry["handle"],**{k:v for k,v in entry["appearance"].items() if k in accepted})
+-            self.owner._apply_highlight_masks()
++            accepted=inspect.signature(renderer.add_mesh).parameters
++            for entry in owner._display_entries().values():
++                renderer.add_mesh(entry["handle"],**{k:v for k,v in entry["appearance"].items() if k in accepted})
++            owner._apply_highlight_masks()
++            owner._gl_ready = True
+         except Exception as error:
+             self.error = error
+             if not getattr(self.owner,"_initializing",True):
+-                QTimer.singleShot(0,self.owner._render_failed)
++                self._defer_render_failure()
++
++    def _defer_render_failure(self):
++        # Context recreation can recover this surface (or replace it) before
++        # the queued callback runs. Keep the identity of the failed attempt.
++        owner, error = self.owner, self.error
++        QTimer.singleShot(0, lambda: owner._render_failed(self, error))
+ 
+     def paintGL(self):
+         if self.error is not None or self.owner._closed:
+@@ -244,7 +364,7 @@ class _GLSurface(_InputSurface, QOpenGLWidget):
+             owner._render_hud(owner.viewport_size, target=target)
+         except Exception as error:
+             self.error = error
+-            QTimer.singleShot(0, owner._render_failed)
++            self._defer_render_failure()
+ 
+ 
+ class QtViewer(RetainedViewer, QWidget):
+@@ -256,8 +376,23 @@ class QtViewer(RetainedViewer, QWidget):
+         allowed = {k: options[k] for k in ("width", "height", "bg", "interactive_fps", "shading", "interaction_profile") if k in options}
+         self.initialize_state(**allowed)
+         self._backend = backend
++        # Explicit GL ownership: the token is the Qt context that the
++        # current renderer/HUD resources were allocated under; it is set
++        # only once both are constructed. Cached GL strings and counters
++        # are passive diagnostics and own no GL state.
++        self._gl_context = None
++        self._gl_ready = False
++        self._gl_destroy_slot = None
++        self._gl_info = {}
++        self._lifecycle_counters = {"initialize_gl_attempts": 0,
++            "context_recreations": 0, "gl_release_attempts": 0,
++            "gl_release_failures": 0, "destroy_calls": 0}
++        self._lifecycle_errors = []
+         self._initializing = True
+         self._timers = set()
++        self._software_revision = 0
++        self._hover_timer = None
++        self._pending_hover = None
+         self._host = self
+         self._renderer = _SoftwareResources()
+         self._hud = _PainterHud() if backend == "software" else None
+@@ -271,12 +406,18 @@ class QtViewer(RetainedViewer, QWidget):
+             # Probe a real widget context before returning a usable backend.
+             self.surface.resize(self.width, self.height)
+             self.surface.show()
+-            self.surface.grabFramebuffer()
++            try:
++                self.surface.grabFramebuffer()
++            except Exception as error:
++                # Roll back the half-constructed viewer before the failure
++                # escapes, mirroring the invalid-context branch below.
++                self.destroy()
++                raise GPUUnavailableError(str(error), diagnostics=(type(error).__name__, str(error)))
+             if not self.surface.isValid() or self.surface.error is not None:
+                 error = self.surface.error or RuntimeError("Qt OpenGL context is unavailable")
+                 self.destroy()
+                 raise GPUUnavailableError(str(error), diagnostics=(type(error).__name__, str(error)))
+-        self._poll_updates()
++        self._start_update_pump()
+         self._initializing = False
+ 
+     @property
+@@ -291,6 +432,93 @@ class QtViewer(RetainedViewer, QWidget):
+                        shader_deformation=False, line_occlusion=False,
+                        stippled_transparency=False, smooth_normals=False)
+ 
++    def _note_lifecycle(self, event, error=None):
++        """Count a lifecycle event; retain bounded evidence of failures."""
++        counters = getattr(self, "_lifecycle_counters", None)
++        if counters is not None:
++            counters[event] = counters.get(event, 0) + 1
++        if error is not None:
++            errors = getattr(self, "_lifecycle_errors", None)
++            if errors is not None:
++                errors.append(f"{type(error).__name__}: {error}")
++                del errors[:-8]
++
++    def diagnostic_snapshot(self):
++        """Passive, JSON-compatible lifecycle diagnostics for this viewer.
++
++        Reads only cached state and Qt's isValid(); it never renders,
++        makes the context current, switches backends, queries live GL,
++        enumerates processes, touches project data or mutates ownership.
++        """
++        context = getattr(self, "_gl_context", None)
++        valid = False
++        if context is not None:
++            try:
++                valid = bool(context.isValid())
++            except RuntimeError:
++                valid = False  # Deleted Qt object.
++        info = getattr(self, "_gl_info", None) or {}
++        return {
++            "schema": "any3dview.qt.lifecycle",
++            "version": 1,
++            "active_backend": self._backend,
++            "closed": bool(self._closed),
++            "context_valid": valid,
++            "context_ready": bool(getattr(self, "_gl_ready", False)),
++            "gl_vendor": str(info.get("vendor", "")),
++            "gl_renderer": str(info.get("renderer", "")),
++            "gl_version": str(info.get("version", "")),
++            "lifecycle_counters": dict(getattr(self, "_lifecycle_counters", None) or {}),
++            "lifecycle_errors": list(getattr(self, "_lifecycle_errors", None) or ()),
++        }
++
++    def _queue_hover(self, event):
++        if self._closed:
++            return
++        # Hover is optional feedback. Coalesce pointer transit so leaving for
++        # a control does not enqueue an obsolete CPU selection-index build.
++        self._pending_hover = (self.surface, SimpleNamespace(x=event.x, y=event.y))
++        if self._hover_timer is None:
++            self._hover_timer = QTimer(self)
++            self._hover_timer.setSingleShot(True)
++            self._hover_timer.timeout.connect(self._deliver_hover)
++            self._timers.add(self._hover_timer)
++        self._hover_timer.start(120)
++
++    def _cancel_hover(self):
++        self._pending_hover = None
++        if self._hover_timer is not None:
++            self._hover_timer.stop()
++
++    def _deliver_hover(self):
++        pending, self._pending_hover = self._pending_hover, None
++        if pending is None or self._closed:
++            return
++        surface, event = pending
++        if surface is self.surface and surface.underMouse() and not self._drag and not self._selection_dragging:
++            self._hover_select(event)
++
++    def _start_update_pump(self):
++        if self._closed or self._update_poll_id is not None:
++            return
++        self._poll_updates()
++        if self._closed:
++            return
++        # Reuse one Qt timer. The shared Tk implementation uses after(), which
++        # otherwise creates/deletes a QObject on every 2 ms poll in this host.
++        timer = QTimer(self)
++        self._update_poll_id = timer
++        self._timers.add(timer)
++        timer.timeout.connect(self._poll_updates)
++        timer.start(2)
++
++    def _poll_updates(self):
++        if self._closed:
++            return
++        completed = self._update_scheduler.drain()
++        if completed:
++            self.redraw()
++
+     def after(self, delay, callback):
+         timer = QTimer(self)
+         timer.setSingleShot(True)
+@@ -317,12 +545,15 @@ class QtViewer(RetainedViewer, QWidget):
+         return max(1, round(self.surface.width()*ratio)), max(1, round(self.surface.height()*ratio))
+ 
+     def request_redraw(self):
++        self._software_revision += 1
+         self.surface.update()
+ 
+     def cancel_redraw(self):
+         pass  # Qt coalesces update requests; closed state prevents drawing.
+ 
+     def make_current(self):
++        if self._closed:
++            raise RuntimeError("Cannot update a closed Qt viewer")
+         if self._backend == "gpu":
+             self.surface.makeCurrent()
+ 
+@@ -383,47 +614,178 @@ class QtViewer(RetainedViewer, QWidget):
+         image = image.convertToFormat(QImage.Format.Format_RGBA8888)
+         return Image.frombytes("RGBA", (image.width(), image.height()), bytes(image.constBits()), "raw", "RGBA", image.bytesPerLine())
+ 
+-    def _release_gl(self):
+-        if self._backend == "gpu" and self._hud is not None:
+-            self.surface.makeCurrent()
+-            self._hud.release()
+-            self._renderer.release()
+-            self._hud = None
+-            self.surface.doneCurrent()
+-
+-    def _render_failed(self):
+-        if self._closed:
++    def _release_gl(self, context=None):
++        """Release GL resources owned by this viewer's tracked context.
++
++        The optional token is the Qt context whose aboutToBeDestroyed
++        fired; a stale callback for a replaced context must not release
++        the replacement's resources. Qt owns the native context: only
++        derived resources are released, and only after the surface's
++        context and Qt's thread-current context are verified to be the
++        owned token; a valid replacement context is never released into.
++        """
++        if self._backend != "gpu":
++            return
++        owner_context = getattr(self, "_gl_context", None)
++        if owner_context is None:
++            return  # No GL resources were allocated, or already released.
++        if context is not None and context is not owner_context:
++            return
++        # Qt's lifecycle contract: disconnect the exact stored slot (and
++        # its context) during cleanup so a later aboutToBeDestroyed
++        # cannot re-enter release for resources that are already gone;
++        # a stale entry for another context is left untouched.
++        slot_entry = getattr(self, "_gl_destroy_slot", None)
++        if slot_entry is not None and slot_entry[0] is owner_context:
++            try:
++                owner_context.aboutToBeDestroyed.disconnect(slot_entry[1])
++            except Exception:
++                pass  # Already disconnected, or the Qt object is gone.
++            self._gl_destroy_slot = None
++        self._gl_context = None
++        self._gl_ready = False
++        self._note_lifecycle("gl_release_attempts")
++        hud, renderer, surface = self._hud, self._renderer, self.surface
++        failures = []
++        try:
++            valid = bool(surface.isValid()) and bool(owner_context.isValid())
++        except Exception:
++            valid = False  # Deleted/broken Qt objects; native resources are gone.
++        if not valid:
++            failures.append("skipped GL release: Qt context unavailable")
++        bound = False
++        if valid:
++            # The surface's context identity is verified BEFORE binding:
++            # during initializeGL on a replacement context, makeCurrent
++            # would bind the new context and doneCurrent would strip it
++            # before moderngl.create_context runs. A replaced surface
++            # context is recorded and skipped without any binding.
++            try:
++                surface_context = surface.context()
++            except Exception:
++                surface_context = None
++            if surface_context is not owner_context:
++                failures.append("skipped GL release: surface context is not the owned context")
++                valid = False
++        if valid:
++            try:
++                surface.makeCurrent()
++                bound = True
++            except Exception as error:
++                failures.append(f"makeCurrent: {type(error).__name__}: {error}")
++                valid = False
++        if valid:
++            # Binding succeeded; Qt's thread-current context must still be
++            # the owned token before any release call is issued.
++            try:
++                current = QOpenGLContext.currentContext()
++            except Exception:
++                current = None
++            if current is not owner_context:
++                failures.append("skipped GL release: current context is not the owned context")
++                valid = False
++        if valid:
++            # Each owner releases independently so one failure cannot skip
++            # the others or the doneCurrent pairing.
++            for name, resource in (("hud", hud), ("renderer", renderer)):
++                if resource is None:
++                    continue
++                try:
++                    resource.release()
++                except BaseException as error:
++                    failures.append(f"{name}.release: {type(error).__name__}: {error}")
++        if bound:
++            # The binding succeeded, so unbind it even when release was
++            # skipped; a doneCurrent failure must not mask earlier ones.
++            try:
++                surface.doneCurrent()
++            except Exception as error:
++                failures.append(f"doneCurrent: {type(error).__name__}: {error}")
++        for failure in failures:
++            self._note_lifecycle("gl_release_failures", error=RuntimeError(failure))
++        self._hud = None
++        self._renderer = None
++
++    def _render_failed(self, source=None, failure=None):
++        if self._closed or self._backend != "gpu":
++            return
++        if source is not None and source is not self.surface:
+             return
+         error = self.surface.error
++        if error is None or (source is not None and error is not failure):
++            return
+         self._backend_diagnostics += (f"Qt rendering failed: {error}",)
+         self.setToolTip(self._backend_diagnostics[-1])
+         self.render_error.emit(self._backend_diagnostics[-1])
++        if getattr(self,"_allow_fallback",False):
++            try:
++                for entry in self._display_entries().values():
++                    handle=entry["handle"]
++                    for mesh in (handle.mesh,*(mesh for _key,mesh in handle.chunks)):
++                        self._validate_mesh_support(mesh,backend="software")
++            except NotImplementedError as refused:
++                self._backend_diagnostics += (f"Qt software fallback refused: {refused}",)
++                self.setToolTip(self._backend_diagnostics[-1])
++                self.render_error.emit(self._backend_diagnostics[-1])
++                return
+         old=self.surface
+         self._release_gl()
+-        old.hide()
++        old_available = True
++        try:
++            old.hide()
++        except RuntimeError as error:
++            old_available = False
++            self._note_lifecycle("deleted_surface_cleanup", error=error)
+         if getattr(self,"_allow_fallback",False):
+             self._backend="software"
+             self._renderer=_SoftwareResources();self._hud=_PainterHud()
+             self.surface=_PaintSurface(self);self.canvas=self.surface
+-            self.layout().replaceWidget(old,self.surface)
++            if old_available:
++                self.layout().replaceWidget(old,self.surface)
++            else:
++                self.layout().addWidget(self.surface)
+             for entry in self._display_entries().values():
+                 self._renderer.add_mesh(entry["handle"],**entry["appearance"])
+             self._apply_highlight_masks()
+             self.surface.show();self.redraw()
+             self.backend_changed.emit("software")
+-            old.deleteLater()
++            if old_available:
++                old.deleteLater()
+ 
+     def destroy(self):
+         if self._closed:
+             return
+-        self.stop_animation()
++        counters = getattr(self, "_lifecycle_counters", None)
++        if counters is not None:
++            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
++        failures = []
++        def attempt(name, callback):
++            try:
++                callback()
++            except Exception as error:
++                failures.append(f"{name}: {type(error).__name__}: {error}")
++        attempt("stop_animation", self.stop_animation)
+         self._closed = True
++        attempt("cancel_hover", self._cancel_hover)
++        attempt("close_scheduler", self._update_scheduler.close)
+         for timer in tuple(self._timers):
+-            self.after_cancel(timer)
+-        self._release_gl()
+-        self._renderer.release()
+-        self.hide()
+-        self.deleteLater()
++            attempt("cancel_timer", lambda timer=timer: self.after_cancel(timer))
++            self._timers.discard(timer)
++        attempt("_release_gl", self._release_gl)
++        renderer = self._renderer
++        if renderer is not None:
++            # Never bypass the GL ownership/context guard after failed cleanup.
++            # Before initialization the GPU host owns only this software placeholder.
++            if getattr(self, "_backend", "software") == "software" or isinstance(renderer, _SoftwareResources):
++                attempt("renderer.release", renderer.release)
++            else:
++                failures.append("skipped leftover GL renderer release: context ownership unverified")
++        attempt("hide", self.hide)
++        attempt("deleteLater", self.deleteLater)
++        note = getattr(self, "_note_lifecycle", None)
++        if note is not None:
++            for failure in failures:
++                note("destroy_failures", error=RuntimeError(failure))
+ 
+     def closeEvent(self, event):
+         self.destroy()
+@@ -433,13 +795,18 @@ class QtViewer(RetainedViewer, QWidget):
+         painter.setRenderHint(QPainter.Antialiasing)
+         ratio = self.surface.devicePixelRatioF()
+         painter.scale(1/ratio, 1/ratio)
+-        painter.fillRect(0, 0, *self.viewport_size, QColor(self.bg))
++        width, height = self.viewport_size
++        painter.fillRect(0, 0, width, height, QColor(self.bg))
++        # One camera basis/viewport/scale evaluation serves every projection
++        # in the frame; per-primitive work then only performs the math itself.
++        frame = _FrameProjection(self)
++        section = self._section_plane if self._section_plane is not None and self._section_plane.enabled else None
+         faces, lines, points, outlines = [], [], [], []
+         for entry in self._display_entries().values():
+             handle = entry["handle"]
+             if handle.removed or not handle.visible:
+                 continue
+-            appearance = entry["appearance"]
++            appearance = dict(entry["appearance"],scalar_range=handle.appearance.scalar_range,colormap=handle.appearance.colormap)
+             if appearance.get("depth_only"):
+                 continue
+             for chunk_id, mesh in [(None, handle.mesh), *handle.chunks]:
+@@ -447,12 +814,21 @@ class QtViewer(RetainedViewer, QWidget):
+                 if mesh.displacements is not None:
+                     positions = positions + handle.deformation_scale*mesh.displacements
+                 world = positions @ handle.transform[:3,:3].T + handle.transform[:3,3]
+-                projected = [self.project_point(Point3D(*p)) for p in world]
++                screen_all, visible_all = self._project_world_points(world, frame)
++                projected = [tuple(screen_all[i]) if visible_all[i] else None for i in range(len(screen_all))]
++                triangle_visible = None
++                if section is None and len(mesh.triangles):
++                    triangle_visible = visible_all[np.asarray(mesh.triangles)].all(axis=1)
+                 mask = self._renderer.masks.get(id(handle), {}) if chunk_id is None else self._renderer.chunk_masks.get((id(handle),chunk_id), {})
+                 hidden = set(mask.get("hidden_elements", ()))
+                 highlighted = set(mask.get("selected_elements", ())) | set(handle.selected_elements)
+                 preselected = set(mask.get("preselected_elements", ()))
+                 colors = appearance.get("face_colors")
++                scalars = mesh.element_scalars if mesh.element_scalars is not None else mesh.node_scalars
++                scalar_limits = None
++                if scalars is not None and not colors:
++                    finite = scalars[np.isfinite(scalars)]
++                    scalar_limits = (appearance.get("scalar_range") or (float(finite.min()),float(finite.max()))) if len(finite) else (0.,1.)
+                 visible_triangles = []
+                 for index, triangle in enumerate(mesh.triangles):
+                     element = int(mesh.triangle_to_element[index]) if mesh.triangle_to_element is not None else index
+@@ -460,24 +836,24 @@ class QtViewer(RetainedViewer, QWidget):
+                         continue
+                     if element in hidden:
+                         continue
+-                    verts = world[triangle]
+-                    if self._section_plane is not None and self._section_plane.enabled:
+-                        verts = np.array([p.to_tuple() for p in self._section_plane.clip_polygon(verts)])
+-                    screen = [self.project_point(Point3D(*p)) for p in verts]
+-                    if len(screen)<3 or any(p is None for p in screen):
+-                        continue
++                    if section is not None:
++                        verts = np.array([p.to_tuple() for p in section.clip_polygon(world[triangle])])
++                        screen, visible = self._project_world_points(verts, frame)
++                        if len(screen)<3 or not visible.all():
++                            continue
++                    else:
++                        if not triangle_visible[index]:
++                            continue
++                        screen = screen_all[triangle]
+                     visible_triangles.append(index)
+                     color = self._highlight_fill if element in highlighted else (colors[index if len(colors)==mesh.triangle_count else element] if colors else appearance["color"])
+-                    scalars=mesh.element_scalars if mesh.element_scalars is not None else mesh.node_scalars
+                     if scalars is not None and not colors and element not in highlighted:
+                         value=float(scalars[element]) if mesh.element_scalars is not None else float(np.mean(scalars[triangle]))
+-                        finite=scalars[np.isfinite(scalars)]
+-                        limits=appearance.get("scalar_range") or (float(finite.min()),float(finite.max())) if len(finite) else (0.,1.)
+-                        color=_interpolate_thickness_color(value,*limits) if np.isfinite(value) else appearance["invalid_color"]
++                        color=scalar_color(value,*scalar_limits,appearance.get('colormap')) if np.isfinite(value) else appearance["invalid_color"]
+                     if element in preselected and element not in highlighted:color="#ffd166"
+                     faces.append((sum(p[2] for p in screen)/len(screen), screen, color, appearance))
+                 if self.show_mesh_lines and (appearance.get("mesh_lines") or entry.get("outline_groups") is None):
+-                    for screen in self._surface_outline_segments(entry, chunk_id, mesh, visible_triangles, world):
++                    for screen in self._surface_outline_segments(entry, chunk_id, mesh, visible_triangles, world, frame):
+                         outlines.append((sum(point[2] for point in screen) / len(screen), screen, appearance))
+                 if mesh.lines is not None and not appearance.get("mesh_lines"):
+                     hidden_lines=set(mask.get("hidden_lines",()))
+@@ -487,7 +863,7 @@ class QtViewer(RetainedViewer, QWidget):
+                         segment=(Point3D(*world[a]),Point3D(*world[b]))
+                         if self._section_plane is not None:segment=self._section_plane.clip_segment(*segment)
+                         if segment is None:continue
+-                        a,b=(self.project_point(p) for p in segment)
++                        a,b=(self._project_point_with_frame(p, frame) for p in segment)
+                         if a is not None and b is not None:
+                             style=dict(appearance)
+                             if index in selected_lines:style["line_color"]=self._highlight_fill
+diff --git a/src/any3dview/retained.py b/src/any3dview/retained.py
+index 1fe5bd3..44dee01 100644
+--- a/src/any3dview/retained.py
++++ b/src/any3dview/retained.py
+@@ -9,6 +9,7 @@ from typing import Callable, Hashable, Optional, Protocol
+ import numpy as np
+ 
+ from .arrays import MeshArrays
++from .appearance import MeshAppearance,validated_appearance,_UNSET
+ from .ownership import PackedOwnerTable
+ 
+ 
+@@ -39,6 +40,7 @@ class MeshHandle:
+         "_chunks",
+         "_chunk_ownership",
+         "_callback",
++        "_validate_mesh",
+         "_owner_thread",
+         "_generations",
+         "_removed",
+@@ -46,6 +48,7 @@ class MeshHandle:
+         "_transform",
+         "_deformation_scale",
+         "_selected_elements",
++        "_appearance",
+     )
+ 
+     def __init__(
+@@ -54,9 +57,15 @@ class MeshHandle:
+         *,
+         on_change: Optional[ChangeCallback] = None,
+         owner_thread: Optional[int] = None,
++        validate_mesh: Optional[Callable[[MeshArrays], None]] = None,
++        scalar_range: Optional[tuple[float,float]] = None,
++        colormap: object = None,
+     ) -> None:
+         if not isinstance(mesh, MeshArrays):
+             raise TypeError("mesh must be MeshArrays")
++        if validate_mesh is not None:validate_mesh(mesh)
++        self._appearance=validated_appearance(scalar_range,colormap)
++        self._validate_mesh = validate_mesh
+         self._mesh = mesh
+         self._chunks: dict[Hashable, MeshArrays] = {}
+         self._chunk_ownership: dict[
+@@ -146,9 +155,27 @@ class MeshHandle:
+         view.flags.writeable = False
+         return view
+ 
++    @property
++    def appearance(self) -> MeshAppearance:
++        return self._appearance
++
++    def update_appearance(self,*,scalar_range=_UNSET,colormap=_UNSET) -> None:
++        """Publish range/palette only; callback rollback invalidates consumedstate."""
++        self._check()
++        old=self._appearance
++        candidate=validated_appearance(old.scalar_range if scalar_range is _UNSET else scalar_range,
++                                       old.colormap if colormap is _UNSET else colormap)
++        if candidate==old:return
++        self._appearance=candidate
++        try:self._change('appearance')
++        except BaseException:
++            self._appearance=old;self._generations['appearance']+=1
++            raise
++
+     def _replace(self, field: str, value: object, generation: str) -> None:
+         self._check()
+         candidate = replace(self._mesh, **{field: value})
++        if self._validate_mesh is not None:self._validate_mesh(candidate)
+         self._mesh = candidate
+         self._change(generation)
+ 
+@@ -167,6 +194,27 @@ class MeshHandle:
+     def update_element_scalars(self, values: object) -> None:
+         self._replace("element_scalars", values, "scalar")
+ 
++    def update_scalar_fields(self, *, node_scalars: object = None,
++                             element_scalars: object = None,
++                             before_publish: Optional[Callable[[MeshArrays], None]] = None) -> None:
++        """Validate both scalar domains before one publication/generation change.
++
++        The optional reservation hook runs only after backend acceptance and
++        before mutation. Pre-publication refusal leaves mesh/generations unchanged.
++        A callback failure restores the old mesh with a fresh generation, so
++        a synchronous consumer cannot mistake the next update for old data.
++        """
++        self._check()
++        candidate=replace(self._mesh,node_scalars=node_scalars,element_scalars=element_scalars)
++        if self._validate_mesh is not None:self._validate_mesh(candidate)
++        if before_publish is not None:before_publish(candidate)
++        previous=self._mesh
++        self._mesh=candidate
++        try:self._change("scalar")
++        except BaseException:
++            self._mesh=previous;self._generations["scalar"]+=1
++            raise
++
+     def set_deformation_scale(self, scale: float) -> None:
+         self._check()
+         value = float(scale)
+@@ -248,6 +296,7 @@ class MeshHandle:
+             raise KeyError(chunk_id)
+         if not isinstance(replacement, MeshArrays):
+             raise TypeError("replacement must be MeshArrays")
++        if self._validate_mesh is not None:self._validate_mesh(replacement)
+         current_owners, current_resolver = self._chunk_ownership[chunk_id]
+         effective_owners = current_owners if owners is None else owners
+         effective_resolver = (
+@@ -276,6 +325,7 @@ class MeshHandle:
+             raise KeyError(f"chunk {chunk_id!r} already exists")
+         if not isinstance(chunk, MeshArrays):
+             raise TypeError("chunk must be MeshArrays")
++        if self._validate_mesh is not None:self._validate_mesh(chunk)
+         self._validate_chunk_ownership(chunk, owners, owner_resolver)
+         self._chunks[chunk_id] = chunk
+         self._chunk_ownership[chunk_id] = (owners, owner_resolver)
+diff --git a/src/any3dview/retained_viewer.py b/src/any3dview/retained_viewer.py
+index a58f475..4aca0d3 100644
+--- a/src/any3dview/retained_viewer.py
++++ b/src/any3dview/retained_viewer.py
+@@ -127,7 +127,33 @@ _CPU_POINT_STACK_LIMIT = 50_000
+ _CPU_OUTLINE_LIMIT = 2_500
+ 
+ 
++class _FrameProjection:
++    """Camera projection constants computed once per painted frame.
++
++    Software painting projects every vertex, segment and outline through the
++    same camera state; capturing the basis, viewport and projection scale up
++    front keeps per-primitive work free of repeated Point3D algebra.
++    """
++
++    __slots__ = ("width", "height", "framebuffer", "basis", "origin",
++                 "forward", "scale", "aspect", "near", "far")
++
++    def __init__(self, viewer):
++        camera = viewer.camera
++        right, up, forward = camera.basis()
++        self.width, self.height = viewer.viewport_size
++        self.framebuffer = viewer._host.framebuffer_size()
++        self.basis = np.asarray((right.to_tuple(), up.to_tuple(), forward.to_tuple()))
++        self.origin = np.asarray(camera.position.to_tuple())
++        self.forward = np.asarray(forward.to_tuple())
++        self.scale = 1.0 / math.tan(camera.fov * 0.5)
++        self.aspect = self.width / self.height
++        self.near = float(camera.near)
++        self.far = float(camera.far)
++
++
+ class RetainedViewer:
++
+     """Shared retained scene, camera and interaction behavior; hosts provide scheduling."""
+ 
+     def initialize_state(self, width=800, height=600, bg="white", interactive_fps=40, shading=True, interaction_profile="legacy"):
+@@ -214,7 +240,8 @@ class RetainedViewer:
+         completed = self._update_scheduler.drain()
+         if completed:
+             self.redraw()
+-        self._update_poll_id = self.after(16, self._poll_updates)
++        # Poll worker updates promptly; rendering remains demand-driven.
++        self._update_poll_id = self.after(2, self._poll_updates)
+ 
+ 
+     @property
+@@ -349,6 +376,34 @@ class RetainedViewer:
+         return float(projected[0]), float(projected[1]), float(depth)
+ 
+ 
++    def _project_world_points(self, world, frame):
++        """Vectorized project_point over a world-space point array.
++
++        Returns ``(screen, visible)`` where screen rows are ``(x, y, depth)``
++        and visible marks rows strictly between the camera's near and far
++        planes, matching project_point's ``None`` contract.
++        """
++        camera = (np.asarray(world, dtype=float).reshape((-1, 3)) - frame.origin) @ frame.basis.T
++        depth = camera[:, 2]
++        visible = (depth > frame.near) & (depth < frame.far)
++        safe = np.where(visible, depth, 1.0)
++        x = (camera[:, 0] * frame.scale / frame.aspect / safe + 1.0) * 0.5 * frame.width
++        y = (1.0 - camera[:, 1] * frame.scale / safe) * 0.5 * frame.height
++        return np.stack((x, y, depth), axis=1), visible
++
++    def _project_point_with_frame(self, point, frame):
++        """Single-point projection reusing frame-local camera state."""
++        value = as_point(point)
++        camera = (np.asarray(value.to_tuple()) - frame.origin) @ frame.basis.T
++        depth = float(camera[2])
++        if depth <= frame.near or depth >= frame.far:
++            return None
++        return (
++            float((camera[0] * frame.scale / frame.aspect / depth + 1.0) * 0.5 * frame.width),
++            float((1.0 - camera[1] * frame.scale / depth) * 0.5 * frame.height),
++            depth,
++        )
++
+     def project_points(
+         self, points: Iterable[object]
+     ) -> tuple[Optional[tuple[float, float, float]], ...]:
+@@ -523,6 +578,8 @@ class RetainedViewer:
+             "draw_calls": self._renderer.draw_calls,
+             "frame_count": self._renderer.frame_count,
+             "geometry_uploads": self._renderer.geometry_uploads,
++            "palette_updates": getattr(self._renderer,"palette_updates",0),
++            "appearance_updates": getattr(self._renderer,"appearance_updates",0),
+             "retained_meshes": len(self._entries),
+             "hud_uploads": self._hud.uploads,
+         }
+@@ -552,6 +609,7 @@ class RetainedViewer:
+ 
+ 
+     def _cancel_interaction(self, _event: Optional[object] = None) -> None:
++        visible_interaction = bool(self._drag or self._selection_dragging)
+         self._drag = ""
+         self._selection_press = None
+         self._selection_current = None
+@@ -560,7 +618,10 @@ class RetainedViewer:
+         self._selection_press_hit_keys = frozenset()
+         self._selection_operation = SelectionOperation.REPLACE
+         self._selection_modifiers = (False, False, False)
+-        self.redraw()
++        # Idle focus transfer changes no pixels. In a software host an
++        # unconditional redraw here delays the newly focused control.
++        if visible_interaction:
++            self.redraw()
+ 
+ 
+     def _focus_out(self, event: object) -> None:
+@@ -1385,10 +1446,11 @@ class RetainedViewer:
+             # Chunk-local identity must be supplied explicitly; a local index
+             # alone is not stable across replacement and must not be exposed.
+             return None
+-        return PickBinding.one(
+-            f"mesh:{id(handle)}:{primitive_kind}:{primitive}",
+-            f"mesh.{primitive_kind}",
+-        )
++        identity = None
++        mesh = handle.mesh
++        if primitive_kind == "line" and mesh.line_to_element is not None and mesh.element_ids is not None:
++            identity = int(mesh.element_ids[int(mesh.line_to_element[primitive])])
++        return PickBinding((PickOwner(f"mesh:{id(handle)}:{primitive_kind}:{primitive}",f"mesh.{primitive_kind}",identity=identity),))
+ 
+ 
+     def _selection_key(self, viewport: tuple[int, int]) -> tuple[object, ...]:
+@@ -1524,6 +1586,8 @@ class RetainedViewer:
+                     )
+                 ):
+                     for line, indices in enumerate(mesh.lines):
++                        if mesh.line_to_element is not None and mesh.active_elements is not None and not mesh.active_elements[int(mesh.line_to_element[line])]:
++                            continue
+                         segment = world[indices]
+                         if plane is not None and plane.enabled:
+                             clipped = plane.clip_segment(segment[0], segment[1])
+@@ -1879,10 +1943,32 @@ class RetainedViewer:
+                 entry["chunk_semantics"] = {}
+                 if not self._animation_frame_active:
+                     self._apply_highlight_masks()
+-        self._renderer.pick_dirty = True
+-        self._selection_index = None
+-        self.redraw()
++        scalar_appearance=False;previous_style=None
++        if change == 'appearance':
++            entry=self._entries.get(id(handle))
++            if entry is not None:
++                previous_style=(entry['appearance'].get('scalar_range'),entry['appearance'].get('colormap'))
++                current_style=(handle.appearance.scalar_range,handle.appearance.colormap)
++                scalar_appearance=previous_style!=current_style
++                entry['appearance']['scalar_range'],entry['appearance']['colormap']=current_style
++        # Visibility also uses the original appearance generation; only actual
++        # scalar style changes are independent of geometry/picking.
++        if change!='scalar' and not scalar_appearance:
++            self._renderer.pick_dirty = True
++            self._selection_index = None
++        try:self.redraw()
++        except BaseException:
++            if scalar_appearance and previous_style is not None:
++                entry['appearance']['scalar_range'],entry['appearance']['colormap']=previous_style
++            raise
++
+ 
++    def _validate_mesh_support(self, mesh: MeshArrays, *, backend: Optional[str] = None) -> None:
++        selected = self.backend_name if backend is None else backend
++        if selected != "gpu" and mesh.lines is not None and len(mesh.lines):
++            mapped_fields = mesh.line_to_element is not None and (mesh.element_scalars is not None or mesh.active_elements is not None)
++            if mapped_fields or mesh.node_scalars is not None:
++                raise NotImplementedError(f"{selected} backend does not support mapped line element fields or interpolated line node fields")
+ 
+     def add_mesh_arrays(
+         self,
+@@ -1901,6 +1987,7 @@ class RetainedViewer:
+         two_sided_shell: bool = False,
+         face_colors: Optional[Sequence[str]] = None,
+         scalar_range: Optional[tuple[float, float]] = None,
++        colormap: object = None,
+         invalid_color: str = "#808080",
+         owners: Optional[PackedOwnerTable] = None,
+         owner_resolver: Optional[Callable[..., object]] = None,
+@@ -1931,6 +2018,7 @@ class RetainedViewer:
+             two_sided_shell=two_sided_shell,
+             face_colors=face_colors,
+             scalar_range=scalar_range,
++            colormap=colormap,
+             invalid_color=invalid_color,
+             owners=owners,
+             owner_resolver=owner_resolver,
+@@ -1963,6 +2051,7 @@ class RetainedViewer:
+         two_sided_shell: bool = False,
+         face_colors: Optional[Sequence[str]] = None,
+         scalar_range: Optional[tuple[float, float]] = None,
++        colormap: object = None,
+         invalid_color: str = "#808080",
+         point_color: str = "#2563eb",
+         point_outline: str = "",
+@@ -1988,7 +2077,7 @@ class RetainedViewer:
+             0, mesh.triangle_count, mesh.element_count
+         ):
+             raise ValueError("face_colors must match triangle or element count")
+-        handle = MeshHandle(mesh, on_change=self._mesh_changed)
++        handle = MeshHandle(mesh,on_change=self._mesh_changed,validate_mesh=self._validate_mesh_support,scalar_range=scalar_range,colormap=colormap)
+         effective_line_color = str(line_color or outline or "#334155")
+         effective_line_width = float(width if line_width is None else line_width)
+         appearance = {
+@@ -2009,7 +2098,8 @@ class RetainedViewer:
+             "layer": int(layer),
+             "mesh_lines": bool(_appearance.get("_mesh_outline", False)),
+             "face_colors": None if face_colors is None else tuple(str(v) for v in face_colors),
+-            "scalar_range": scalar_range,
++            "scalar_range": handle.appearance.scalar_range,
++            "colormap": handle.appearance.colormap,
+             "back_color": str(back_color),
+             "invalid_color": str(invalid_color),
+             "point_outline": str(point_outline),
+@@ -2036,20 +2126,26 @@ class RetainedViewer:
+             "outline_groups": _appearance.get("_outline_groups"),
+             "outline_topology": mesh.triangles,
+         }
+-        self._host.make_current()
+-        self._renderer.add_mesh(handle, **{
+-            key: value for key, value in appearance.items()
+-            if key in {
+-                "color", "line_color", "point_color", "point_outline", "line_width", "point_size",
+-                "opacity", "cull_backface", "line_overlay", "point_overlay", "lit", "stipple",
+-                "stipple_phase",
+-                "pickable", "scalar_range",
+-                "depth_only",
+-                "layer",
+-                "mesh_lines",
+-                "face_colors", "back_color", "invalid_color",
+-            }
+-        })
++        try:
++            self._host.make_current()
++            self._renderer.add_mesh(handle, **{
++                key: value for key, value in appearance.items()
++                if key in {
++                    "color", "line_color", "point_color", "point_outline", "line_width", "point_size",
++                    "opacity", "cull_backface", "line_overlay", "point_overlay", "lit", "stipple",
++                    "stipple_phase",
++                    "pickable", "scalar_range", "colormap",
++                    "depth_only",
++                    "layer",
++                    "mesh_lines",
++                    "face_colors", "back_color", "invalid_color",
++                }
++            })
++        except BaseException:
++            self._entries.pop(id(handle),None)
++            try:self._renderer.remove_mesh(handle)
++            except BaseException:pass
++            raise
+         self.redraw()
+         self._selection_index = None
+         return handle
+@@ -3079,12 +3175,12 @@ class RetainedViewer:
+             if handle.removed:
+                 continue
+             self._renderer.add_mesh(handle, **{
+-                key: value for key, value in entry.get("appearance", {}).items()
++                key: value for key, value in dict(entry.get("appearance", {}),scalar_range=handle.appearance.scalar_range,colormap=handle.appearance.colormap).items()
+                 if key in {
+                     "color", "line_color", "point_color", "point_outline", "line_width", "point_size",
+                     "opacity", "cull_backface", "line_overlay", "point_overlay", "lit", "stipple",
+                     "stipple_phase",
+-                    "pickable", "depth_only", "scalar_range",
++                    "pickable", "depth_only", "scalar_range", "colormap",
+                     "layer",
+                     "mesh_lines",
+                     "face_colors", "back_color", "invalid_color",
+@@ -3104,7 +3200,7 @@ class RetainedViewer:
+         self._animation_frame_active = True
+         frame = self._animation_cache[index]
+         for item in frame["meshes"]:
+-            handle = MeshHandle(item["mesh"])
++            handle = MeshHandle(item["mesh"],scalar_range=item["appearance"].get("scalar_range"),colormap=item["appearance"].get("colormap"))
+             for key, mesh, owners, resolver in item["chunks"]:
+                 handle.add_chunk(
+                     key,
+@@ -3122,7 +3218,7 @@ class RetainedViewer:
+                     "color", "line_color", "point_color", "point_outline", "line_width", "point_size",
+                     "opacity", "cull_backface", "line_overlay", "point_overlay", "lit", "stipple",
+                     "stipple_phase",
+-                    "pickable", "depth_only", "scalar_range",
++                    "pickable", "depth_only", "scalar_range", "colormap",
+                     "layer",
+                     "mesh_lines",
+                     "face_colors", "back_color", "invalid_color",
+@@ -3234,23 +3330,23 @@ class RetainedViewer:
+         scale = 0.5 * height / math.tan(self.camera.fov * 0.5)
+         return tuple((0.5 * width + point[0] * scale / point[2], 0.5 * height - point[1] * scale / point[2]) for point in camera_polygon)
+ 
+-    def _project_outline_segment(self, segment):
++    def _project_outline_segment(self, segment, frame=None):
++        if frame is None:
++            frame = _FrameProjection(self)
+         if self._section_plane is not None:
+             segment = self._section_plane.clip_segment(*segment)
+             if segment is None:
+                 return ()
+             segment = np.asarray([point.to_tuple() for point in segment])
+-        right, up, forward = self.camera.basis()
+-        basis = np.asarray((right.to_tuple(), up.to_tuple(), forward.to_tuple()))
+-        segment = (np.asarray(segment) - np.asarray(self.camera.position.to_tuple())) @ basis.T
+-        for limit, keep_greater in ((self.camera.near, True), (self.camera.far, False)):
++        segment = (np.asarray(segment) - frame.origin) @ frame.basis.T
++        for limit, keep_greater in ((frame.near, True), (frame.far, False)):
+             inside = segment[:, 2] >= limit if keep_greater else segment[:, 2] <= limit
+             if not inside.any():
+                 return ()
+             if not inside.all():
+                 amount = (limit - segment[0, 2]) / (segment[1, 2] - segment[0, 2])
+                 segment[0 if not inside[0] else 1] = segment[0] + amount * (segment[1] - segment[0])
+-        width, height = self._host.framebuffer_size()
++        width, height = frame.framebuffer
+         scale = .5 * height / math.tan(self.camera.fov * .5)
+         return tuple((.5 * width + point[0] * scale / point[2], .5 * height - point[1] * scale / point[2], point[2]) for point in segment)
+ 
+@@ -3264,12 +3360,33 @@ class RetainedViewer:
+                 return None
+         return groups
+ 
+-    def _surface_outline_segments(self, entry, chunk_id, mesh, triangles, world):
++    def _surface_outline_segments(self, entry, chunk_id, mesh, triangles, world, frame=None):
++        if frame is None:
++            frame = _FrameProjection(self)
+         groups = self._outline_groups(entry, chunk_id, mesh)
++        depths = (np.asarray(world) - frame.origin) @ frame.forward
++        plane = self._section_plane
++        if (depths.size and depths.min() > frame.near and depths.max() < frame.far
++                and (plane is None or not plane.enabled)):
++            # Preserve the same semantic boundary loops; only projection is
++            # batched. No clipping can occur with every vertex inside depth.
++            camera = (np.asarray(world) - frame.origin) @ frame.basis.T
++            width, height = frame.framebuffer
++            scale = .5 * height / math.tan(self.camera.fov * .5)
++            screen = np.column_stack((
++                .5 * width + camera[:, 0] * scale / camera[:, 2],
++                .5 * height - camera[:, 1] * scale / camera[:, 2],
++                camera[:, 2],
++            ))
++            for loop in _surface_outline_loops(mesh, triangles, groups):
++                edges = [loop] if len(loop) == 2 else zip(loop, (*loop[1:], loop[0]))
++                for a, b in edges:
++                    yield (tuple(screen[a]), tuple(screen[b]))
++            return
+         for loop in _surface_outline_loops(mesh, triangles, groups):
+             edges = [loop] if len(loop) == 2 else zip(loop, (*loop[1:], loop[0]))
+             for edge in edges:
+-                points = self._project_outline_segment(world[list(edge)])
++                points = self._project_outline_segment(world[list(edge)], frame)
+                 if points:
+                     yield points
+         # Clipping creates actual boundaries through filled triangles. Keep
+@@ -3288,22 +3405,27 @@ class RetainedViewer:
+                     amount = distance / (distance - distances[j])
+                     intersections.append(polygon[i] + amount * (polygon[j] - polygon[i]))
+             return intersections if len(intersections) == 2 else ()
+-        forward = np.asarray(self.camera.basis()[2].to_tuple())
+-        origin = np.asarray(self.camera.position.to_tuple())
++        # A depth limit can only cut a triangle when some vertex of the mesh
++        # actually reaches it; when the whole mesh sits strictly inside both
++        # bounds the per-triangle scan cannot produce a segment.
++        depths = (np.asarray(world) - frame.origin) @ frame.forward
++        limits = [limit for limit, crosses in (
++            (frame.near, bool(depths.size) and depths.min() <= frame.near),
++            (frame.far, bool(depths.size) and depths.max() >= frame.far)) if crosses]
+         for triangle in triangles:
+             polygon = world[mesh.triangles[triangle]]
+             plane = self._section_plane
+             if plane is not None and plane.enabled:
+                 section = cut(polygon, np.asarray([plane.signed_distance(point) for point in polygon]))
+                 if len(section):
+-                    points = self._project_outline_segment(section)
++                    points = self._project_outline_segment(section, frame)
+                     if points:
+                         yield points
+                 polygon = np.asarray([point.to_tuple() for point in plane.clip_polygon(polygon)]).reshape((-1, 3))
+-            for limit in (self.camera.near, self.camera.far):
+-                section = cut(polygon, (polygon - origin) @ forward - limit)
++            for limit in limits:
++                section = cut(polygon, (polygon - frame.origin) @ frame.forward - limit)
+                 if len(section):
+-                    points = self._project_outline_segment(section)
++                    points = self._project_outline_segment(section, frame)
+                     if points:
+                         yield points
+ 
+diff --git a/tests/test_anygeometry_adapter.py b/tests/test_anygeometry_adapter.py
+index 4dc9cb8..7c25a91 100644
+--- a/tests/test_anygeometry_adapter.py
++++ b/tests/test_anygeometry_adapter.py
+@@ -1,4 +1,4 @@
+-"""Schema-4 ANYgeometry adapter qualification tests."""
++"""ANYgeometry adapter regressions for owner-decoded geometry documents."""
+ 
+ from __future__ import annotations
+ 
+@@ -16,6 +16,33 @@ from any3dview import MeshHandle
+ from any3dview.adapters.anygeometry import DisplayMode, DisplayPolicy, GeometryLayer
+ 
+ 
++def test_schema_five_exact_curves_use_owner_evaluation_after_round_trip():
++    from any3dview.adapters.anygeometry.tessellation import sampled_edge
++    from any3dview.adapters.anygeometry.policy import TessellationPolicy
++    model=anygeometry.GeometryModel()
++    first=anygeometry.Cylinder((0,0,-2),(0,0,1),(1,0,0),1,4)
++    second=anygeometry.Cylinder((0,-2,0),(0,1,0),(1,0,0),1,4)
++    curves=(anygeometry.EllipticArc((0,0,0),(2,0,0),(0,1,1),0.,np.pi/2),
++            anygeometry.CylinderIntersectionCurve(first,second,0.,np.pi/2,1))
++    edges=[]
++    for curve in curves:
++        start,end=model.add_points(curve.evaluate([0.,1.]))
++        edges.append(model.add_curve(start,end,curve))
++    document=anygeometry.to_dict(model)
++    assert document['version']==5
++    restored=anygeometry.from_dict(document)
++    before=anygeometry.to_dict(restored)
++    for edge,curve in zip(edges,curves):
++        values=sampled_edge(restored,edge,TessellationPolicy(),0)
++        assert values.shape[1]==3 and len(values)>2
++        assert np.isfinite(values).all()
++        np.testing.assert_allclose(values[[0,-1]],curve.evaluate([0.,1.]),atol=1e-12)
++        if isinstance(curve,anygeometry.CylinderIntersectionCurve):
++            np.testing.assert_allclose(values[:,0]**2+values[:,1]**2,1.,atol=1e-12)
++            np.testing.assert_allclose(values[:,0]**2+values[:,2]**2,1.,atol=1e-12)
++    assert anygeometry.to_dict(restored)==before
++
++
+ @dataclass
+ class _AddedMesh:
+     handle: MeshHandle

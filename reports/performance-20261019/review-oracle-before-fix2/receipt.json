@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:/Python/Python314/python.exe",
+    "-m",
+    "pytest",
+    "tests/test_performance_review_oracle.py",
+    "-q",
+    "-p",
+    "no:cacheprovider"
+  ],
+  "timeout_s": 120.0,
+  "exit_code": 1,
+  "timed_out": false,
+  "process_wall_s": 4.002746500016656
+}

@@ -1,0 +1,126 @@
+{
+  "gpu": {
+    "orbit": {
+      "baseline_ms": 1.5384000143967569,
+      "candidate_ms": 1.379750028718263,
+      "speedup": 1.1149845858860927,
+      "candidate_p95_ms": 1.7693250265438107
+    },
+    "field_index": {
+      "baseline_ms": 274.60099998279475,
+      "candidate_ms": 0.07539999205619097,
+      "speedup": 3641.923460391767,
+      "candidate_p95_ms": 0.2352500043343752
+    },
+    "animation": {
+      "baseline_ms": 12.787249987013638,
+      "candidate_ms": 3.1239500094670802,
+      "speedup": 4.093295330674973,
+      "candidate_p95_ms": 10.936950027826242
+    },
+    "images": {
+      "initial": {
+        "identical": true,
+        "changed_pixels": 0,
+        "max_channel_difference": 0
+      },
+      "orbit": {
+        "identical": true,
+        "changed_pixels": 0,
+        "max_channel_difference": 0
+      },
+      "animation": {
+        "identical": true,
+        "changed_pixels": 0,
+        "max_channel_difference": 0
+      }
+    },
+    "picking_identical": true,
+    "animation_picking_identical": true,
+    "hover_calls": [
+      100,
+      1
+    ],
+    "idle_ticks": [
+      13,
+      0
+    ],
+    "animation_uploads": [
+      30,
+      10
+    ],
+    "mutation_picking_identical": true,
+    "mutation_images": {
+      "unchanged": true,
+      "selection": true,
+      "transform": true,
+      "deformation": true,
+      "active": true,
+      "section": true,
+      "hidden": true,
+      "positions": true
+    }
+  },
+  "software": {
+    "orbit": {
+      "baseline_ms": 240.52054996718653,
+      "candidate_ms": 182.31554998783395,
+      "speedup": 1.3192541721385622,
+      "candidate_p95_ms": 223.0096349871019
+    },
+    "field_index": {
+      "baseline_ms": 264.12724997499026,
+      "candidate_ms": 0.22555000032298267,
+      "speedup": 1171.0363537874787,
+      "candidate_p95_ms": 0.35261498996987933
+    },
+    "animation": {
+      "baseline_ms": 245.91934998170473,
+      "candidate_ms": 233.2899000030011,
+      "speedup": 1.0541362912776815,
+      "candidate_p95_ms": 269.11902500432916
+    },
+    "images": {
+      "initial": {
+        "identical": true,
+        "changed_pixels": 0,
+        "max_channel_difference": 0
+      },
+      "orbit": {
+        "identical": true,
+        "changed_pixels": 0,
+        "max_channel_difference": 0
+      },
+      "animation": {
+        "identical": true,
+        "changed_pixels": 0,
+        "max_channel_difference": 0
+      }
+    },
+    "picking_identical": true,
+    "animation_picking_identical": true,
+    "hover_calls": [
+      1,
+      1
+    ],
+    "idle_ticks": [
+      13,
+      0
+    ],
+    "animation_uploads": [
+      1152,
+      192
+    ],
+    "mutation_picking_identical": true,
+    "mutation_images": {
+      "unchanged": true,
+      "selection": true,
+      "transform": true,
+      "deformation": true,
+      "active": true,
+      "section": true,
+      "hidden": true,
+      "positions": true
+    }
+  }
+}

@@ -9,6 +9,7 @@ from typing import Callable, Hashable, Optional, Protocol
 import numpy as np
 
 from .arrays import MeshArrays
+from .appearance import MeshAppearance,validated_appearance,_UNSET
 from .ownership import PackedOwnerTable
 
 
@@ -39,6 +40,7 @@ class MeshHandle:
         "_chunks",
         "_chunk_ownership",
         "_callback",
+        "_validate_mesh",
         "_owner_thread",
         "_generations",
         "_removed",
@@ -46,6 +48,7 @@ class MeshHandle:
         "_transform",
         "_deformation_scale",
         "_selected_elements",
+        "_appearance",
     )
 
     def __init__(
@@ -54,9 +57,15 @@ class MeshHandle:
         *,
         on_change: Optional[ChangeCallback] = None,
         owner_thread: Optional[int] = None,
+        validate_mesh: Optional[Callable[[MeshArrays], None]] = None,
+        scalar_range: Optional[tuple[float,float]] = None,
+        colormap: object = None,
     ) -> None:
         if not isinstance(mesh, MeshArrays):
             raise TypeError("mesh must be MeshArrays")
+        if validate_mesh is not None:validate_mesh(mesh)
+        self._appearance=validated_appearance(scalar_range,colormap)
+        self._validate_mesh = validate_mesh
         self._mesh = mesh
         self._chunks: dict[Hashable, MeshArrays] = {}
         self._chunk_ownership: dict[
@@ -146,9 +155,27 @@ class MeshHandle:
         view.flags.writeable = False
         return view
 
+    @property
+    def appearance(self) -> MeshAppearance:
+        return self._appearance
+
+    def update_appearance(self,*,scalar_range=_UNSET,colormap=_UNSET) -> None:
+        """Publish range/palette only; callback rollback invalidates consumedstate."""
+        self._check()
+        old=self._appearance
+        candidate=validated_appearance(old.scalar_range if scalar_range is _UNSET else scalar_range,
+                                       old.colormap if colormap is _UNSET else colormap)
+        if candidate==old:return
+        self._appearance=candidate
+        try:self._change('appearance')
+        except BaseException:
+            self._appearance=old;self._generations['appearance']+=1
+            raise
+
     def _replace(self, field: str, value: object, generation: str) -> None:
         self._check()
         candidate = replace(self._mesh, **{field: value})
+        if self._validate_mesh is not None:self._validate_mesh(candidate)
         self._mesh = candidate
         self._change(generation)
 
@@ -166,6 +193,27 @@ class MeshHandle:
 
     def update_element_scalars(self, values: object) -> None:
         self._replace("element_scalars", values, "scalar")
+
+    def update_scalar_fields(self, *, node_scalars: object = None,
+                             element_scalars: object = None,
+                             before_publish: Optional[Callable[[MeshArrays], None]] = None) -> None:
+        """Validate both scalar domains before one publication/generation change.
+
+        The optional reservation hook runs only after backend acceptance and
+        before mutation. Pre-publication refusal leaves mesh/generations unchanged.
+        A callback failure restores the old mesh with a fresh generation, so
+        a synchronous consumer cannot mistake the next update for old data.
+        """
+        self._check()
+        candidate=replace(self._mesh,node_scalars=node_scalars,element_scalars=element_scalars)
+        if self._validate_mesh is not None:self._validate_mesh(candidate)
+        if before_publish is not None:before_publish(candidate)
+        previous=self._mesh
+        self._mesh=candidate
+        try:self._change("scalar")
+        except BaseException:
+            self._mesh=previous;self._generations["scalar"]+=1
+            raise
 
     def set_deformation_scale(self, scale: float) -> None:
         self._check()
@@ -248,6 +296,7 @@ class MeshHandle:
             raise KeyError(chunk_id)
         if not isinstance(replacement, MeshArrays):
             raise TypeError("replacement must be MeshArrays")
+        if self._validate_mesh is not None:self._validate_mesh(replacement)
         current_owners, current_resolver = self._chunk_ownership[chunk_id]
         effective_owners = current_owners if owners is None else owners
         effective_resolver = (
@@ -276,6 +325,7 @@ class MeshHandle:
             raise KeyError(f"chunk {chunk_id!r} already exists")
         if not isinstance(chunk, MeshArrays):
             raise TypeError("chunk must be MeshArrays")
+        if self._validate_mesh is not None:self._validate_mesh(chunk)
         self._validate_chunk_ownership(chunk, owners, owner_resolver)
         self._chunks[chunk_id] = chunk
         self._chunk_ownership[chunk_id] = (owners, owner_resolver)

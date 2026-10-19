@@ -1,0 +1,637 @@
+.E.E.EFF.E.E.............F..................FFFFFF..............FF...... [ 67%]
+................................                                         [100%]
+=================================== ERRORS ====================================
+__________ ERROR at teardown of test_one_notifier_and_no_idle_timer ___________
+
+    @pytest.fixture
+    def pump():
+        app=QCoreApplication.instance() or QCoreApplication([])
+        p=Pump();yield p
+>       if not p._closed:p.destroy()
+                         ^^^^^^^^^^^
+
+tests\test_qt_update_pump.py:32: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <test_qt_update_pump.Pump(0x19bf10a58f0) at 0x0000019BF2760A40>
+
+    def destroy(self):
+        if self._closed:
+            return
+        counters = getattr(self, "_lifecycle_counters", None)
+        if counters is not None:
+            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
+        failures = []
+        def attempt(name, callback):
+            try:
+                callback()
+            except Exception as error:
+                failures.append(f"{name}: {type(error).__name__}: {error}")
+        attempt("stop_animation", self.stop_animation)
+        self._closed = True
+        attempt("cancel_hover", self._cancel_hover)
+>       attempt("clear_prep_cache", self._software_prep.clear)
+                                    ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'Pump' object has no attribute '_software_prep'
+
+src\any3dview\qt.py:896: AttributeError
+_ ERROR at teardown of test_worker_submission_runs_fifo_on_owner_through_real_timer _
+
+    @pytest.fixture
+    def pump():
+        app=QCoreApplication.instance() or QCoreApplication([])
+        p=Pump();yield p
+>       if not p._closed:p.destroy()
+                         ^^^^^^^^^^^
+
+tests\test_qt_update_pump.py:32: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <test_qt_update_pump.Pump(0x19bf10a5d00) at 0x0000019BF325BA40>
+
+    def destroy(self):
+        if self._closed:
+            return
+        counters = getattr(self, "_lifecycle_counters", None)
+        if counters is not None:
+            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
+        failures = []
+        def attempt(name, callback):
+            try:
+                callback()
+            except Exception as error:
+                failures.append(f"{name}: {type(error).__name__}: {error}")
+        attempt("stop_animation", self.stop_animation)
+        self._closed = True
+        attempt("cancel_hover", self._cancel_hover)
+>       attempt("clear_prep_cache", self._software_prep.clear)
+                                    ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'Pump' object has no attribute '_software_prep'
+
+src\any3dview\qt.py:896: AttributeError
+____ ERROR at teardown of test_drain_limit_retained_and_next_tick_finishes ____
+
+    @pytest.fixture
+    def pump():
+        app=QCoreApplication.instance() or QCoreApplication([])
+        p=Pump();yield p
+>       if not p._closed:p.destroy()
+                         ^^^^^^^^^^^
+
+tests\test_qt_update_pump.py:32: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <test_qt_update_pump.Pump(0x19bf10a6890) at 0x0000019BF3554740>
+
+    def destroy(self):
+        if self._closed:
+            return
+        counters = getattr(self, "_lifecycle_counters", None)
+        if counters is not None:
+            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
+        failures = []
+        def attempt(name, callback):
+            try:
+                callback()
+            except Exception as error:
+                failures.append(f"{name}: {type(error).__name__}: {error}")
+        attempt("stop_animation", self.stop_animation)
+        self._closed = True
+        attempt("cancel_hover", self._cancel_hover)
+>       attempt("clear_prep_cache", self._software_prep.clear)
+                                    ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'Pump' object has no attribute '_software_prep'
+
+src\any3dview\qt.py:896: AttributeError
+______ ERROR at teardown of test_worker_cannot_drain_or_execute_callback ______
+
+    @pytest.fixture
+    def pump():
+        app=QCoreApplication.instance() or QCoreApplication([])
+        p=Pump();yield p
+>       if not p._closed:p.destroy()
+                         ^^^^^^^^^^^
+
+tests\test_qt_update_pump.py:32: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <test_qt_update_pump.Pump(0x19bf10a7290) at 0x0000019BF34C48C0>
+
+    def destroy(self):
+        if self._closed:
+            return
+        counters = getattr(self, "_lifecycle_counters", None)
+        if counters is not None:
+            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
+        failures = []
+        def attempt(name, callback):
+            try:
+                callback()
+            except Exception as error:
+                failures.append(f"{name}: {type(error).__name__}: {error}")
+        attempt("stop_animation", self.stop_animation)
+        self._closed = True
+        attempt("cancel_hover", self._cancel_hover)
+>       attempt("clear_prep_cache", self._software_prep.clear)
+                                    ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'Pump' object has no attribute '_software_prep'
+
+src\any3dview\qt.py:896: AttributeError
+_ ERROR at teardown of test_initial_callback_failure_does_not_leave_running_timer _
+
+    @pytest.fixture
+    def pump():
+        app=QCoreApplication.instance() or QCoreApplication([])
+        p=Pump();yield p
+>       if not p._closed:p.destroy()
+                         ^^^^^^^^^^^
+
+tests\test_qt_update_pump.py:32: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <test_qt_update_pump.Pump(0x19bf10a6070) at 0x0000019BF32134C0>
+
+    def destroy(self):
+        if self._closed:
+            return
+        counters = getattr(self, "_lifecycle_counters", None)
+        if counters is not None:
+            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
+        failures = []
+        def attempt(name, callback):
+            try:
+                callback()
+            except Exception as error:
+                failures.append(f"{name}: {type(error).__name__}: {error}")
+        attempt("stop_animation", self.stop_animation)
+        self._closed = True
+        attempt("cancel_hover", self._cancel_hover)
+>       attempt("clear_prep_cache", self._software_prep.clear)
+                                    ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'Pump' object has no attribute '_software_prep'
+
+src\any3dview\qt.py:896: AttributeError
+================================== FAILURES ===================================
+___________ test_destroy_rejects_submissions_and_stale_notification ___________
+
+pump = <test_qt_update_pump.Pump(0x19bf10a68e0) at 0x0000019BF2ED9640>
+
+    def test_destroy_rejects_submissions_and_stale_notification(pump):
+        pump._start_update_pump();seen=[]
+        pump._update_scheduler.submit(seen.append,'stale')
+>       pump.destroy()
+
+tests\test_qt_update_pump.py:68: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <test_qt_update_pump.Pump(0x19bf10a68e0) at 0x0000019BF2ED9640>
+
+    def destroy(self):
+        if self._closed:
+            return
+        counters = getattr(self, "_lifecycle_counters", None)
+        if counters is not None:
+            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
+        failures = []
+        def attempt(name, callback):
+            try:
+                callback()
+            except Exception as error:
+                failures.append(f"{name}: {type(error).__name__}: {error}")
+        attempt("stop_animation", self.stop_animation)
+        self._closed = True
+        attempt("cancel_hover", self._cancel_hover)
+>       attempt("clear_prep_cache", self._software_prep.clear)
+                                    ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'Pump' object has no attribute '_software_prep'
+
+src\any3dview\qt.py:896: AttributeError
+___________ test_destroy_during_drain_discards_remaining_callbacks ____________
+
+pump = <test_qt_update_pump.Pump(0x19bf10a5df0) at 0x0000019BF33A9300>
+
+    def test_destroy_during_drain_discards_remaining_callbacks(pump):
+        seen=[];pump._update_scheduler.submit(pump.destroy)
+        pump._update_scheduler.submit(seen.append,'stale')
+>       pump._start_update_pump()
+
+tests\test_qt_update_pump.py:77: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\any3dview\qt.py:616: in _start_update_pump
+    self._poll_updates()
+src\any3dview\qt.py:633: in _poll_updates
+    completed = self._update_scheduler.drain()
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src\any3dview\scheduler.py:88: in drain
+    callback(*args, **kwargs)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <test_qt_update_pump.Pump(0x19bf10a5df0) at 0x0000019BF33A9300>
+
+    def destroy(self):
+        if self._closed:
+            return
+        counters = getattr(self, "_lifecycle_counters", None)
+        if counters is not None:
+            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
+        failures = []
+        def attempt(name, callback):
+            try:
+                callback()
+            except Exception as error:
+                failures.append(f"{name}: {type(error).__name__}: {error}")
+        attempt("stop_animation", self.stop_animation)
+        self._closed = True
+        attempt("cancel_hover", self._cancel_hover)
+>       attempt("clear_prep_cache", self._software_prep.clear)
+                                    ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'Pump' object has no attribute '_software_prep'
+
+src\any3dview\qt.py:896: AttributeError
+_ test_actual_software_scene_highlight_visibility_and_section_match_uncached __
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000019BF2F908D0>
+
+    def test_actual_software_scene_highlight_visibility_and_section_match_uncached(monkeypatch):
+        import numpy as np
+        from any3dview import MeshArrays
+        from any3dview.retained_viewer import RetainedViewer
+        v=RetainedViewer();v.initialize_state(width=120,height=90)
+        v._software_revision=0;v._renderer=qt._SoftwareResources();v._hud=qt._PainterHud()
+        v._software_prep={};v._prune_software_prep=qt.QtViewer._prune_software_prep.__get__(v)
+        v._render_hud=lambda size:None  # Scene renderer comparison; no font engine/window.
+        surface=SimpleNamespace(owner=v,_cached_image=None,_cached_key=None,
+            width=lambda:120,height=lambda:90,devicePixelRatioF=lambda:1.,update=lambda:None)
+        v.surface=surface
+        v._host=SimpleNamespace(make_current=lambda:None,framebuffer_size=lambda:(120,90),request_redraw=lambda:qt.QtViewer.request_redraw(v))
+        v._paint_software=lambda painter:qt.QtViewer._paint_software(v,painter)
+        mesh=MeshArrays(np.array([[0.,0.,0.],[1.,0.,0.],[1.,1.,0.],[0.,1.,0.]]),np.array([[0,1,2],[0,2,3]],dtype=np.uint32))
+        handle=v.add_mesh_arrays(mesh,tags='face',color='#123456',cull_backface=False)
+        destination=QImage(120,90,QImage.Format_RGBA8888)
+        def painter_factory(target):return QPainter(destination if target is surface else target)
+        painter_factory.Antialiasing=QPainter.Antialiasing
+        monkeypatch.setattr(qt,'QPainter',painter_factory)
+        for change in (lambda:None,lambda:v.set_highlight(['face']),lambda:v.set_section_plane((1,0,0),.5),lambda:handle.set_visible(False)):
+            change()
+            expected=QImage(120,90,QImage.Format_RGBA8888)
+>           v._paint_software(QPainter(expected))
+
+tests\test_qt_software_responsiveness.py:108: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_qt_software_responsiveness.py:98: in <lambda>
+    v._paint_software=lambda painter:qt.QtViewer._paint_software(v,painter)
+                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <any3dview.retained_viewer.RetainedViewer object at 0x0000019BF3561550>
+painter = <PySide6.QtGui.QPainter object at 0x0000019BF3256AC0>
+
+    def _paint_software(self, painter):
+        self._prune_software_prep()
+        pixel_ratio = self.pixel_ratio
+        painter.setRenderHint(QPainter.Antialiasing)
+        ratio = self.surface.devicePixelRatioF()
+        painter.scale(1/ratio, 1/ratio)
+        width, height = self.viewport_size
+        painter.fillRect(0, 0, width, height, QColor(self.bg))
+        # One camera basis/viewport/scale evaluation serves every projection
+        # in the frame; the retained preparation below removes the
+        # camera-invariant per-primitive work from repeated frames.
+        frame = _FrameProjection(self)
+        section = self._section_plane if self._section_plane is not None and self._section_plane.enabled else None
+        faces, lines, points, outlines = [], [], [], []
+        for entry in self._display_entries().values():
+            handle = entry["handle"]
+            if handle.removed or not handle.visible:
+                continue
+            appearance = dict(entry["appearance"],scalar_range=handle.appearance.scalar_range,colormap=handle.appearance.colormap)
+            if appearance.get("depth_only"):
+                continue
+            for chunk_id, mesh in [(None, handle.mesh), *handle.chunks]:
+>               prep = self._software_chunk_prep(entry, handle, chunk_id, mesh, section)
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^
+E               AttributeError: 'RetainedViewer' object has no attribute '_software_chunk_prep'. Did you mean: '_software_prep'?
+
+src\any3dview\qt.py:1058: AttributeError
+________ TestDestroy.test_gpu_destroy_releases_gl_owners_exactly_once _________
+
+self = <test_qt_resource_lifecycle.TestDestroy object at 0x0000019BF2D1B9D0>
+
+    def test_gpu_destroy_releases_gl_owners_exactly_once(self):
+        hud, hud_calls = make_resource("hud")
+        renderer, renderer_calls = make_resource("renderer")
+        owner = make_destroyable(make_owner(
+            hud=hud, renderer=renderer, gl_context=make_context(),
+            surface=make_surface(valid=True)))
+>       owner.destroy()
+
+tests\test_qt_resource_lifecycle.py:341: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = namespace(_backend='gpu', _hud=namespace(release=<function make_resource.<locals>.release at 0x0000019BF2EDFAB0>), _re...n make_destroyable.<locals>.<lambda> at 0x0000019BF2F6C250>, destroy=<bound method QtViewer.destroy of namespace(...)>)
+
+    def destroy(self):
+        if self._closed:
+            return
+        counters = getattr(self, "_lifecycle_counters", None)
+        if counters is not None:
+            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
+        failures = []
+        def attempt(name, callback):
+            try:
+                callback()
+            except Exception as error:
+                failures.append(f"{name}: {type(error).__name__}: {error}")
+        attempt("stop_animation", self.stop_animation)
+        self._closed = True
+        attempt("cancel_hover", self._cancel_hover)
+>       attempt("clear_prep_cache", self._software_prep.clear)
+                                    ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'types.SimpleNamespace' object has no attribute '_software_prep'
+
+src\any3dview\qt.py:896: AttributeError
+_____ TestDestroy.test_software_destroy_releases_software_resources_once ______
+
+self = <test_qt_resource_lifecycle.TestDestroy object at 0x0000019BF2D1BB10>
+
+    def test_software_destroy_releases_software_resources_once(self):
+        software, software_calls = make_resource("software")
+        owner = make_destroyable(make_owner(
+            backend="software", hud=SimpleNamespace(release=lambda: None),
+            renderer=software, gl_context=None, surface=make_surface()))
+>       owner.destroy()
+
+tests\test_qt_resource_lifecycle.py:353: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = namespace(_backend='software', _hud=namespace(release=<function TestDestroy.test_software_destroy_releases_software_re...n make_destroyable.<locals>.<lambda> at 0x0000019BF2FA2980>, destroy=<bound method QtViewer.destroy of namespace(...)>)
+
+    def destroy(self):
+        if self._closed:
+            return
+        counters = getattr(self, "_lifecycle_counters", None)
+        if counters is not None:
+            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
+        failures = []
+        def attempt(name, callback):
+            try:
+                callback()
+            except Exception as error:
+                failures.append(f"{name}: {type(error).__name__}: {error}")
+        attempt("stop_animation", self.stop_animation)
+        self._closed = True
+        attempt("cancel_hover", self._cancel_hover)
+>       attempt("clear_prep_cache", self._software_prep.clear)
+                                    ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'types.SimpleNamespace' object has no attribute '_software_prep'
+
+src\any3dview\qt.py:896: AttributeError
+_ TestDestroy.test_gpu_destroy_before_initialization_releases_placeholder_once _
+
+self = <test_qt_resource_lifecycle.TestDestroy object at 0x0000019BF2D42520>
+
+    def test_gpu_destroy_before_initialization_releases_placeholder_once(self):
+        placeholder_calls = []
+        placeholder = qt._SoftwareResources()
+        placeholder.release = lambda: placeholder_calls.append("placeholder")
+        owner = make_destroyable(make_owner(
+            hud=None, renderer=placeholder, gl_context=None,
+            surface=make_surface()))
+>       owner.destroy()
+
+tests\test_qt_resource_lifecycle.py:365: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = namespace(_backend='gpu', _hud=None, _renderer=<any3dview.qt._SoftwareResources object at 0x0000019BF2784190>, _gl_con...n make_destroyable.<locals>.<lambda> at 0x0000019BF2FA1A60>, destroy=<bound method QtViewer.destroy of namespace(...)>)
+
+    def destroy(self):
+        if self._closed:
+            return
+        counters = getattr(self, "_lifecycle_counters", None)
+        if counters is not None:
+            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
+        failures = []
+        def attempt(name, callback):
+            try:
+                callback()
+            except Exception as error:
+                failures.append(f"{name}: {type(error).__name__}: {error}")
+        attempt("stop_animation", self.stop_animation)
+        self._closed = True
+        attempt("cancel_hover", self._cancel_hover)
+>       attempt("clear_prep_cache", self._software_prep.clear)
+                                    ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'types.SimpleNamespace' object has no attribute '_software_prep'
+
+src\any3dview\qt.py:896: AttributeError
+__ TestDestroyResilience.test_stop_animation_failure_still_cancels_and_hides __
+
+self = <test_qt_resource_lifecycle.TestDestroyResilience object at 0x0000019BF2D1A0D0>
+
+    def test_stop_animation_failure_still_cancels_and_hides(self):
+        hud, hud_calls = make_resource("hud")
+        renderer, renderer_calls = make_resource("renderer")
+        owner = make_destroyable(make_owner(
+            hud=hud, renderer=renderer, gl_context=make_context(),
+            surface=make_surface(valid=True)))
+        def broken_animation():
+            raise RuntimeError("animation boom")
+        owner.stop_animation = broken_animation
+        cancelled = []
+        owner._timers = {self.FakeTimer(cancelled)}
+>       owner.destroy()
+
+tests\test_qt_resource_lifecycle.py:387: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = namespace(_backend='gpu', _hud=namespace(release=<function make_resource.<locals>.release at 0x0000019BF2FA0A90>), _re...n make_destroyable.<locals>.<lambda> at 0x0000019BF2FA0040>, destroy=<bound method QtViewer.destroy of namespace(...)>)
+
+    def destroy(self):
+        if self._closed:
+            return
+        counters = getattr(self, "_lifecycle_counters", None)
+        if counters is not None:
+            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
+        failures = []
+        def attempt(name, callback):
+            try:
+                callback()
+            except Exception as error:
+                failures.append(f"{name}: {type(error).__name__}: {error}")
+        attempt("stop_animation", self.stop_animation)
+        self._closed = True
+        attempt("cancel_hover", self._cancel_hover)
+>       attempt("clear_prep_cache", self._software_prep.clear)
+                                    ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'types.SimpleNamespace' object has no attribute '_software_prep'
+
+src\any3dview\qt.py:896: AttributeError
+_ TestDestroyResilience.test_release_gl_failure_still_releases_software_and_hides _
+
+self = <test_qt_resource_lifecycle.TestDestroyResilience object at 0x0000019BF2D1BC50>
+
+    def test_release_gl_failure_still_releases_software_and_hides(self):
+        software, software_calls = make_resource("software")
+        owner = make_destroyable(make_owner(
+            backend="software", hud=None, renderer=software, gl_context=None,
+            surface=make_surface()))
+        def broken_release():
+            raise RuntimeError("release boom")
+        owner._release_gl = broken_release
+>       owner.destroy()
+
+tests\test_qt_resource_lifecycle.py:405: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = namespace(_backend='software', _hud=None, _renderer=namespace(release=<function make_resource.<locals>.release at 0x00...n make_destroyable.<locals>.<lambda> at 0x0000019BF2F95DD0>, destroy=<bound method QtViewer.destroy of namespace(...)>)
+
+    def destroy(self):
+        if self._closed:
+            return
+        counters = getattr(self, "_lifecycle_counters", None)
+        if counters is not None:
+            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
+        failures = []
+        def attempt(name, callback):
+            try:
+                callback()
+            except Exception as error:
+                failures.append(f"{name}: {type(error).__name__}: {error}")
+        attempt("stop_animation", self.stop_animation)
+        self._closed = True
+        attempt("cancel_hover", self._cancel_hover)
+>       attempt("clear_prep_cache", self._software_prep.clear)
+                                    ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'types.SimpleNamespace' object has no attribute '_software_prep'
+
+src\any3dview\qt.py:896: AttributeError
+_ TestDestroyResilience.test_renderer_release_failure_still_hides_and_deletes _
+
+self = <test_qt_resource_lifecycle.TestDestroyResilience object at 0x0000019BF2D42650>
+
+    def test_renderer_release_failure_still_hides_and_deletes(self):
+        renderer, renderer_calls = make_resource(
+            "renderer", failure=RuntimeError("renderer boom"))
+        owner = make_destroyable(make_owner(
+            backend="software", hud=None, renderer=renderer, gl_context=None,
+            surface=make_surface()))
+>       owner.destroy()
+
+tests\test_qt_resource_lifecycle.py:417: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = namespace(_backend='software', _hud=None, _renderer=namespace(release=<function make_resource.<locals>.release at 0x00...n make_destroyable.<locals>.<lambda> at 0x0000019BF2F94930>, destroy=<bound method QtViewer.destroy of namespace(...)>)
+
+    def destroy(self):
+        if self._closed:
+            return
+        counters = getattr(self, "_lifecycle_counters", None)
+        if counters is not None:
+            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
+        failures = []
+        def attempt(name, callback):
+            try:
+                callback()
+            except Exception as error:
+                failures.append(f"{name}: {type(error).__name__}: {error}")
+        attempt("stop_animation", self.stop_animation)
+        self._closed = True
+        attempt("cancel_hover", self._cancel_hover)
+>       attempt("clear_prep_cache", self._software_prep.clear)
+                                    ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'types.SimpleNamespace' object has no attribute '_software_prep'
+
+src\any3dview\qt.py:896: AttributeError
+_ TestDeletedSurfaceRecovery.test_destroy_deleted_timer_and_widget_still_releases_and_closes _
+
+self = <test_qt_resource_lifecycle.TestDeletedSurfaceRecovery object at 0x0000019BF356C690>
+
+    def test_destroy_deleted_timer_and_widget_still_releases_and_closes(self):
+        renderer,calls=make_resource('software')
+        owner=make_destroyable(make_owner(backend='software',renderer=renderer,gl_context=None))
+        def deleted():raise RuntimeError('Internal C++ object already deleted')
+        owner._cancel_hover=deleted;owner.hide=deleted;owner.deleteLater=deleted
+>       owner.destroy();owner.destroy()
+        ^^^^^^^^^^^^^^^
+
+tests\test_qt_resource_lifecycle.py:761: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = namespace(_backend='software', _hud=None, _renderer=namespace(release=<function make_resource.<locals>.release at 0x00...releases_and_closes.<locals>.deleted at 0x0000019BF35FB950>, destroy=<bound method QtViewer.destroy of namespace(...)>)
+
+    def destroy(self):
+        if self._closed:
+            return
+        counters = getattr(self, "_lifecycle_counters", None)
+        if counters is not None:
+            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
+        failures = []
+        def attempt(name, callback):
+            try:
+                callback()
+            except Exception as error:
+                failures.append(f"{name}: {type(error).__name__}: {error}")
+        attempt("stop_animation", self.stop_animation)
+        self._closed = True
+        attempt("cancel_hover", self._cancel_hover)
+>       attempt("clear_prep_cache", self._software_prep.clear)
+                                    ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'types.SimpleNamespace' object has no attribute '_software_prep'
+
+src\any3dview\qt.py:896: AttributeError
+_ TestDeletedSurfaceRecovery.test_cleanup_failure_never_bypasses_gl_context_guard _
+
+self = <test_qt_resource_lifecycle.TestDeletedSurfaceRecovery object at 0x0000019BF2D42C40>
+
+    def test_cleanup_failure_never_bypasses_gl_context_guard(self):
+        renderer,calls=make_resource('GPU')
+        owner=make_destroyable(make_owner(renderer=renderer,gl_context=make_context()))
+        def fail():
+            owner._gl_context=None
+            raise RuntimeError('cleanup failed after detaching token')
+        owner._release_gl=fail
+>       owner.destroy()
+
+tests\test_qt_resource_lifecycle.py:772: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = namespace(_backend='gpu', _hud=None, _renderer=namespace(release=<function make_resource.<locals>.release at 0x0000019...n make_destroyable.<locals>.<lambda> at 0x0000019BF35FACF0>, destroy=<bound method QtViewer.destroy of namespace(...)>)
+
+    def destroy(self):
+        if self._closed:
+            return
+        counters = getattr(self, "_lifecycle_counters", None)
+        if counters is not None:
+            counters["destroy_calls"] = counters.get("destroy_calls", 0) + 1
+        failures = []
+        def attempt(name, callback):
+            try:
+                callback()
+            except Exception as error:
+                failures.append(f"{name}: {type(error).__name__}: {error}")
+        attempt("stop_animation", self.stop_animation)
+        self._closed = True
+        attempt("cancel_hover", self._cancel_hover)
+>       attempt("clear_prep_cache", self._software_prep.clear)
+                                    ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'types.SimpleNamespace' object has no attribute '_software_prep'
+
+src\any3dview\qt.py:896: AttributeError
+=========================== short test summary info ===========================
+FAILED tests/test_qt_update_pump.py::test_destroy_rejects_submissions_and_stale_notification
+FAILED tests/test_qt_update_pump.py::test_destroy_during_drain_discards_remaining_callbacks
+FAILED tests/test_qt_software_responsiveness.py::test_actual_software_scene_highlight_visibility_and_section_match_uncached
+FAILED tests/test_qt_resource_lifecycle.py::TestDestroy::test_gpu_destroy_releases_gl_owners_exactly_once
+FAILED tests/test_qt_resource_lifecycle.py::TestDestroy::test_software_destroy_releases_software_resources_once
+FAILED tests/test_qt_resource_lifecycle.py::TestDestroy::test_gpu_destroy_before_initialization_releases_placeholder_once
+FAILED tests/test_qt_resource_lifecycle.py::TestDestroyResilience::test_stop_animation_failure_still_cancels_and_hides
+FAILED tests/test_qt_resource_lifecycle.py::TestDestroyResilience::test_release_gl_failure_still_releases_software_and_hides
+FAILED tests/test_qt_resource_lifecycle.py::TestDestroyResilience::test_renderer_release_failure_still_hides_and_deletes
+FAILED tests/test_qt_resource_lifecycle.py::TestDeletedSurfaceRecovery::test_destroy_deleted_timer_and_widget_still_releases_and_closes
+FAILED tests/test_qt_resource_lifecycle.py::TestDeletedSurfaceRecovery::test_cleanup_failure_never_bypasses_gl_context_guard
+ERROR tests/test_qt_update_pump.py::test_one_notifier_and_no_idle_timer - Att...
+ERROR tests/test_qt_update_pump.py::test_worker_submission_runs_fifo_on_owner_through_real_timer
+ERROR tests/test_qt_update_pump.py::test_drain_limit_retained_and_next_tick_finishes
+ERROR tests/test_qt_update_pump.py::test_worker_cannot_drain_or_execute_callback
+ERROR tests/test_qt_update_pump.py::test_initial_callback_failure_does_not_leave_running_timer
+11 failed, 88 passed, 5 errors in 3.24s

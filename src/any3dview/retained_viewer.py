@@ -127,7 +127,84 @@ _CPU_POINT_STACK_LIMIT = 50_000
 _CPU_OUTLINE_LIMIT = 2_500
 
 
+class _FrameProjection:
+    """Camera projection constants computed once per painted frame.
+
+    Software painting projects every vertex, segment and outline through the
+    same camera state; capturing the basis, viewport and projection scale up
+    front keeps per-primitive work free of repeated Point3D algebra.
+    """
+
+    __slots__ = ("width", "height", "framebuffer", "basis", "origin",
+                 "forward", "scale", "aspect", "near", "far")
+
+    def __init__(self, viewer):
+        camera = viewer.camera
+        right, up, forward = camera.basis()
+        self.width, self.height = viewer.viewport_size
+        self.framebuffer = viewer._host.framebuffer_size()
+        self.basis = np.asarray((right.to_tuple(), up.to_tuple(), forward.to_tuple()))
+        self.origin = np.asarray(camera.position.to_tuple())
+        self.forward = np.asarray(forward.to_tuple())
+        self.scale = 1.0 / math.tan(camera.fov * 0.5)
+        self.aspect = self.width / self.height
+        self.near = float(camera.near)
+        self.far = float(camera.far)
+
+
+def _arrays_equal(first, second) -> bool:
+    """Exact array equality where None matches only None."""
+    if first is None or second is None:
+        return first is None and second is None
+    first = np.asarray(first)
+    second = np.asarray(second)
+    return first.shape == second.shape and bool(np.array_equal(first, second))
+
+
+def _value_shapes_compatible(first, second) -> bool:
+    """Shape guard for in-place value updates; None transitions pass."""
+    if first is None or second is None:
+        return True
+    return np.asarray(first).shape == np.asarray(second).shape
+
+
+# Topology arrays and static mesh data (normals have no update API) must
+# be exactly equal for an animation frame to reuse a live handle; value
+# arrays only need matching shapes (None may transition).
+_ANIMATION_TOPOLOGY_FIELDS = (
+    "triangles", "lines", "point_indices", "triangle_to_element",
+    "line_to_element", "element_ids", "normals",
+)
+_ANIMATION_VALUE_FIELDS = (
+    "displacements", "node_scalars", "element_scalars", "active_elements",
+)
+# Static appearance must match exactly for reuse; scalar range and palette
+# are dynamic and flow through the handle's appearance mutator instead.
+_ANIMATION_STATIC_APPEARANCE_KEYS = (
+    "color", "line_color", "point_color", "point_outline", "line_width",
+    "point_size", "opacity", "cull_backface", "line_overlay", "point_overlay",
+    "lit", "stipple", "stipple_phase", "pickable", "depth_only", "layer",
+    "mesh_lines", "face_colors", "back_color", "invalid_color",
+)
+_ANIMATION_RENDERER_APPEARANCE_KEYS = frozenset(_ANIMATION_STATIC_APPEARANCE_KEYS) | {
+    "scalar_range", "colormap",
+}
+
+
+def _picking_generations(generations) -> tuple[int, ...]:
+    """Generations that the projected selection index consumes."""
+    return (
+        generations.topology,
+        generations.position,
+        generations.displacement,
+        generations.active,
+        generations.selection,
+        generations.transform,
+    )
+
+
 class RetainedViewer:
+
     """Shared retained scene, camera and interaction behavior; hosts provide scheduling."""
 
     def initialize_state(self, width=800, height=600, bg="white", interactive_fps=40, shading=True, interaction_profile="legacy"):
@@ -214,7 +291,8 @@ class RetainedViewer:
         completed = self._update_scheduler.drain()
         if completed:
             self.redraw()
-        self._update_poll_id = self.after(16, self._poll_updates)
+        # Poll worker updates promptly; rendering remains demand-driven.
+        self._update_poll_id = self.after(2, self._poll_updates)
 
 
     @property
@@ -348,6 +426,34 @@ class RetainedViewer:
         depth = (value - self.camera.position).dot(forward)
         return float(projected[0]), float(projected[1]), float(depth)
 
+
+    def _project_world_points(self, world, frame):
+        """Vectorized project_point over a world-space point array.
+
+        Returns ``(screen, visible)`` where screen rows are ``(x, y, depth)``
+        and visible marks rows strictly between the camera's near and far
+        planes, matching project_point's ``None`` contract.
+        """
+        camera = (np.asarray(world, dtype=float).reshape((-1, 3)) - frame.origin) @ frame.basis.T
+        depth = camera[:, 2]
+        visible = (depth > frame.near) & (depth < frame.far)
+        safe = np.where(visible, depth, 1.0)
+        x = (camera[:, 0] * frame.scale / frame.aspect / safe + 1.0) * 0.5 * frame.width
+        y = (1.0 - camera[:, 1] * frame.scale / safe) * 0.5 * frame.height
+        return np.stack((x, y, depth), axis=1), visible
+
+    def _project_point_with_frame(self, point, frame):
+        """Single-point projection reusing frame-local camera state."""
+        value = as_point(point)
+        camera = (np.asarray(value.to_tuple()) - frame.origin) @ frame.basis.T
+        depth = float(camera[2])
+        if depth <= frame.near or depth >= frame.far:
+            return None
+        return (
+            float((camera[0] * frame.scale / frame.aspect / depth + 1.0) * 0.5 * frame.width),
+            float((1.0 - camera[1] * frame.scale / depth) * 0.5 * frame.height),
+            depth,
+        )
 
     def project_points(
         self, points: Iterable[object]
@@ -523,6 +629,8 @@ class RetainedViewer:
             "draw_calls": self._renderer.draw_calls,
             "frame_count": self._renderer.frame_count,
             "geometry_uploads": self._renderer.geometry_uploads,
+            "palette_updates": getattr(self._renderer,"palette_updates",0),
+            "appearance_updates": getattr(self._renderer,"appearance_updates",0),
             "retained_meshes": len(self._entries),
             "hud_uploads": self._hud.uploads,
         }
@@ -552,6 +660,7 @@ class RetainedViewer:
 
 
     def _cancel_interaction(self, _event: Optional[object] = None) -> None:
+        visible_interaction = bool(self._drag or self._selection_dragging)
         self._drag = ""
         self._selection_press = None
         self._selection_current = None
@@ -560,7 +669,10 @@ class RetainedViewer:
         self._selection_press_hit_keys = frozenset()
         self._selection_operation = SelectionOperation.REPLACE
         self._selection_modifiers = (False, False, False)
-        self.redraw()
+        # Idle focus transfer changes no pixels. In a software host an
+        # unconditional redraw here delays the newly focused control.
+        if visible_interaction:
+            self.redraw()
 
 
     def _focus_out(self, event: object) -> None:
@@ -1387,10 +1499,11 @@ class RetainedViewer:
             # Chunk-local identity must be supplied explicitly; a local index
             # alone is not stable across replacement and must not be exposed.
             return None
-        return PickBinding.one(
-            f"mesh:{id(handle)}:{primitive_kind}:{primitive}",
-            f"mesh.{primitive_kind}",
-        )
+        identity = None
+        mesh = handle.mesh
+        if primitive_kind == "line" and mesh.line_to_element is not None and mesh.element_ids is not None:
+            identity = int(mesh.element_ids[int(mesh.line_to_element[primitive])])
+        return PickBinding((PickOwner(f"mesh:{id(handle)}:{primitive_kind}:{primitive}",f"mesh.{primitive_kind}",identity=identity),))
 
 
     def _selection_key(self, viewport: tuple[int, int]) -> tuple[object, ...]:
@@ -1409,7 +1522,10 @@ class RetainedViewer:
             tuple(
                 (
                     identifier,
-                    entry["handle"].generations,
+                    # The projected index consumes geometry, visibility
+                    # and ownership only; scalar/appearance-only changes
+                    # must not rebuild it.
+                    _picking_generations(entry["handle"].generations),
                     entry["handle"].visible,
                     entry["handle"].removed,
                     entry["handle"].deformation_scale,
@@ -1526,6 +1642,8 @@ class RetainedViewer:
                     )
                 ):
                     for line, indices in enumerate(mesh.lines):
+                        if mesh.line_to_element is not None and mesh.active_elements is not None and not mesh.active_elements[int(mesh.line_to_element[line])]:
+                            continue
                         segment = world[indices]
                         if plane is not None and plane.enabled:
                             clipped = plane.clip_segment(segment[0], segment[1])
@@ -1881,10 +1999,32 @@ class RetainedViewer:
                 entry["chunk_semantics"] = {}
                 if not self._animation_frame_active:
                     self._apply_highlight_masks()
-        self._renderer.pick_dirty = True
-        self._selection_index = None
-        self.redraw()
+        scalar_appearance=False;previous_style=None
+        if change == 'appearance':
+            entry=self._entries.get(id(handle))
+            if entry is not None:
+                previous_style=(entry['appearance'].get('scalar_range'),entry['appearance'].get('colormap'))
+                current_style=(handle.appearance.scalar_range,handle.appearance.colormap)
+                scalar_appearance=previous_style!=current_style
+                entry['appearance']['scalar_range'],entry['appearance']['colormap']=current_style
+        # Visibility also uses the original appearance generation; only actual
+        # scalar style changes are independent of geometry/picking.
+        if change!='scalar' and not scalar_appearance:
+            self._renderer.pick_dirty = True
+            self._selection_index = None
+        try:self.redraw()
+        except BaseException:
+            if scalar_appearance and previous_style is not None:
+                entry['appearance']['scalar_range'],entry['appearance']['colormap']=previous_style
+            raise
 
+
+    def _validate_mesh_support(self, mesh: MeshArrays, *, backend: Optional[str] = None) -> None:
+        selected = self.backend_name if backend is None else backend
+        if selected != "gpu" and mesh.lines is not None and len(mesh.lines):
+            mapped_fields = mesh.line_to_element is not None and (mesh.element_scalars is not None or mesh.active_elements is not None)
+            if mapped_fields or mesh.node_scalars is not None:
+                raise NotImplementedError(f"{selected} backend does not support mapped line element fields or interpolated line node fields")
 
     def add_mesh_arrays(
         self,
@@ -1903,6 +2043,7 @@ class RetainedViewer:
         two_sided_shell: bool = False,
         face_colors: Optional[Sequence[str]] = None,
         scalar_range: Optional[tuple[float, float]] = None,
+        colormap: object = None,
         invalid_color: str = "#808080",
         owners: Optional[PackedOwnerTable] = None,
         owner_resolver: Optional[Callable[..., object]] = None,
@@ -1933,6 +2074,7 @@ class RetainedViewer:
             two_sided_shell=two_sided_shell,
             face_colors=face_colors,
             scalar_range=scalar_range,
+            colormap=colormap,
             invalid_color=invalid_color,
             owners=owners,
             owner_resolver=owner_resolver,
@@ -1965,6 +2107,7 @@ class RetainedViewer:
         two_sided_shell: bool = False,
         face_colors: Optional[Sequence[str]] = None,
         scalar_range: Optional[tuple[float, float]] = None,
+        colormap: object = None,
         invalid_color: str = "#808080",
         point_color: str = "#2563eb",
         point_outline: str = "",
@@ -1990,7 +2133,7 @@ class RetainedViewer:
             0, mesh.triangle_count, mesh.element_count
         ):
             raise ValueError("face_colors must match triangle or element count")
-        handle = MeshHandle(mesh, on_change=self._mesh_changed)
+        handle = MeshHandle(mesh,on_change=self._mesh_changed,validate_mesh=self._validate_mesh_support,scalar_range=scalar_range,colormap=colormap)
         effective_line_color = str(line_color or outline or "#334155")
         effective_line_width = float(width if line_width is None else line_width)
         appearance = {
@@ -2011,7 +2154,8 @@ class RetainedViewer:
             "layer": int(layer),
             "mesh_lines": bool(_appearance.get("_mesh_outline", False)),
             "face_colors": None if face_colors is None else tuple(str(v) for v in face_colors),
-            "scalar_range": scalar_range,
+            "scalar_range": handle.appearance.scalar_range,
+            "colormap": handle.appearance.colormap,
             "back_color": str(back_color),
             "invalid_color": str(invalid_color),
             "point_outline": str(point_outline),
@@ -2038,20 +2182,26 @@ class RetainedViewer:
             "outline_groups": _appearance.get("_outline_groups"),
             "outline_topology": mesh.triangles,
         }
-        self._host.make_current()
-        self._renderer.add_mesh(handle, **{
-            key: value for key, value in appearance.items()
-            if key in {
-                "color", "line_color", "point_color", "point_outline", "line_width", "point_size",
-                "opacity", "cull_backface", "line_overlay", "point_overlay", "lit", "stipple",
-                "stipple_phase",
-                "pickable", "scalar_range",
-                "depth_only",
-                "layer",
-                "mesh_lines",
-                "face_colors", "back_color", "invalid_color",
-            }
-        })
+        try:
+            self._host.make_current()
+            self._renderer.add_mesh(handle, **{
+                key: value for key, value in appearance.items()
+                if key in {
+                    "color", "line_color", "point_color", "point_outline", "line_width", "point_size",
+                    "opacity", "cull_backface", "line_overlay", "point_overlay", "lit", "stipple",
+                    "stipple_phase",
+                    "pickable", "scalar_range", "colormap",
+                    "depth_only",
+                    "layer",
+                    "mesh_lines",
+                    "face_colors", "back_color", "invalid_color",
+                }
+            })
+        except BaseException:
+            self._entries.pop(id(handle),None)
+            try:self._renderer.remove_mesh(handle)
+            except BaseException:pass
+            raise
         self.redraw()
         self._selection_index = None
         return handle
@@ -3081,12 +3231,12 @@ class RetainedViewer:
             if handle.removed:
                 continue
             self._renderer.add_mesh(handle, **{
-                key: value for key, value in entry.get("appearance", {}).items()
+                key: value for key, value in dict(entry.get("appearance", {}),scalar_range=handle.appearance.scalar_range,colormap=handle.appearance.colormap).items()
                 if key in {
                     "color", "line_color", "point_color", "point_outline", "line_width", "point_size",
                     "opacity", "cull_backface", "line_overlay", "point_overlay", "lit", "stipple",
                     "stipple_phase",
-                    "pickable", "depth_only", "scalar_range",
+                    "pickable", "depth_only", "scalar_range", "colormap",
                     "layer",
                     "mesh_lines",
                     "face_colors", "back_color", "invalid_color",
@@ -3096,7 +3246,181 @@ class RetainedViewer:
         self._selection_index_key = None
 
 
+    def _animation_entry(self, handle, item):
+        """Per-frame display entry for one animation mesh handle."""
+
+        return {
+            "handle": handle,
+            "owners": item["owners"],
+            "owner_resolver": item["owner_resolver"],
+            "appearance": item["appearance"],
+            "outline_groups": item.get("outline_groups"),
+            "outline_topology": handle.mesh.triangles,
+            "layer": item["layer"],
+            "tags": item["tags"],
+            "item": item["item"],
+            "face_colors": item["appearance"].get("face_colors"),
+            "semantic_elements": {
+                key: np.asarray(value).copy()
+                for key, value in item["semantic_elements"].items()
+            },
+            "hit_elements": {
+                key: np.asarray(value).copy()
+                for key, value in item["hit_elements"].items()
+            },
+            "semantic_lines": {
+                key: np.asarray(value).copy()
+                for key, value in item["semantic_lines"].items()
+            },
+            "hit_lines": {
+                key: np.asarray(value).copy()
+                for key, value in item["hit_lines"].items()
+            },
+            "semantic_points": {
+                key: np.asarray(value).copy()
+                for key, value in item["semantic_points"].items()
+            },
+            "hit_points": {
+                key: np.asarray(value).copy()
+                for key, value in item["hit_points"].items()
+            },
+            "chunk_semantics": self._copy_chunk_semantics(
+                item.get("chunk_semantics", {})
+            ),
+        }
+
+    def _animation_mesh_compatible(self, current, replacement) -> bool:
+        """Exact topology guard for reusing a handle with new frame arrays."""
+
+        for field in _ANIMATION_TOPOLOGY_FIELDS:
+            if not _arrays_equal(getattr(current, field), getattr(replacement, field)):
+                return False
+        if np.asarray(current.positions).shape != np.asarray(replacement.positions).shape:
+            return False
+        for field in _ANIMATION_VALUE_FIELDS:
+            if not _value_shapes_compatible(
+                getattr(current, field), getattr(replacement, field)
+            ):
+                return False
+        return True
+
+    def _animation_chunk_compatible(self, current, chunk) -> bool:
+        """Chunks have no granular mutation API, so any changed chunk
+        data (positions, displacements, scalars, active mask) must
+        reject reuse; the full rebuild path installs the new arrays."""
+        if not self._animation_mesh_compatible(current, chunk):
+            return False
+        if not _arrays_equal(current.positions, chunk.positions):
+            return False
+        for field in _ANIMATION_VALUE_FIELDS:
+            if not _arrays_equal(getattr(current, field), getattr(chunk, field)):
+                return False
+        return True
+
+    def _animation_item_compatible(self, handle, item) -> bool:
+        if not self._animation_mesh_compatible(handle.mesh, item["mesh"]):
+            return False
+        chunks = item["chunks"]
+        existing = handle.chunks
+        if len(chunks) != len(existing):
+            return False
+        for (chunk_id, chunk, _owners, _resolver), (current_id, current) in zip(chunks, existing):
+            if chunk_id != current_id or not self._animation_chunk_compatible(current, chunk):
+                return False
+        entry = self._animation_entries.get(id(handle))
+        if entry is None:
+            return False
+        # Static appearance must match exactly; scalar range and palette are
+        # dynamic and flow through the handle's appearance mutator instead.
+        appearance = item["appearance"]
+        current_appearance = entry["appearance"]
+        return all(
+            appearance.get(key) == current_appearance.get(key)
+            for key in _ANIMATION_STATIC_APPEARANCE_KEYS
+        )
+
+    def _apply_animation_item(self, handle, item) -> None:
+        """Push one frame's dynamic arrays through the handle mutators."""
+
+        mesh = item["mesh"]
+        current = handle.mesh
+        if not _arrays_equal(current.positions, mesh.positions):
+            handle.update_positions(mesh.positions)
+        if not _arrays_equal(current.displacements, mesh.displacements):
+            handle.update_displacements(mesh.displacements)
+        if (not _arrays_equal(current.node_scalars, mesh.node_scalars)
+                or not _arrays_equal(current.element_scalars, mesh.element_scalars)):
+            handle.update_scalar_fields(
+                node_scalars=mesh.node_scalars,
+                element_scalars=mesh.element_scalars,
+            )
+        if not _arrays_equal(current.active_elements, mesh.active_elements):
+            handle.set_active_elements(mesh.active_elements)
+        for chunk_id, _chunk, owners, resolver in item["chunks"]:
+            if handle.chunk_ownership(chunk_id) != (owners, resolver):
+                handle.set_chunk_ownership(chunk_id, owners, owner_resolver=resolver)
+        if not _arrays_equal(handle.transform, item["transform"]):
+            handle.set_transform(item["transform"])
+        handle.set_deformation_scale(item["deformation_scale"])
+        if not _arrays_equal(handle.selected_elements, item["selected"]):
+            handle.set_selected_elements(item["selected"])
+        handle.set_visible(item["visible"])
+        handle.update_appearance(
+            scalar_range=item["appearance"].get("scalar_range"),
+            colormap=item["appearance"].get("colormap"),
+        )
+
+    def _update_animation_handles(self, frame) -> bool:
+        """Reuse the live animation handles when the frame is compatible.
+
+        Compatibility is verified for every item before any mutation, so an
+        incompatible frame leaves the previous frame's scene untouched for
+        the full rebuild path.  Live entries stay detached from the
+        renderer exactly as the rebuild path detaches them.
+        """
+
+        items = frame["meshes"]
+        handles = self._animation_handles
+        if not handles or len(items) != len(handles):
+            return False
+        for handle, item in zip(handles, items):
+            if not self._animation_item_compatible(handle, item):
+                return False
+        for entry in self._entries.values():
+            self._renderer.remove_mesh(entry["handle"])
+        entries = {}
+        for handle, item in zip(handles, items):
+            self._apply_animation_item(handle, item)
+            entries[id(handle)] = self._animation_entry(handle, item)
+        self._animation_entries = entries
+        return True
+
+    def _finish_animation_frame(self, frame) -> None:
+        self._world_text = [dict(value) for value in frame["world_text"]]
+        self._thickness_legend = (
+            None if frame["legend"] is None else dict(frame["legend"])
+        )
+        self._highlighted_tags = frame["highlighted_tags"]
+        self._preselected_key = frame["preselected_key"]
+        self._preselection_from_hit = frame["preselection_from_hit"]
+        self._highlight_fill = frame["highlight_fill"]
+        self._highlight_outline = frame["highlight_outline"]
+        self._selection_index = None
+        self._selection_index_key = None
+        self._apply_highlight_masks()
+
     def _show_animation_frame(self, index: int) -> None:
+        frame = self._animation_cache[index]
+        if self._animation_frame_active and self._animation_handles:
+            try:
+                if self._update_animation_handles(frame):
+                    self._finish_animation_frame(frame)
+                    return
+            except Exception:
+                # A failed in-place mutation must not leave a partially
+                # updated live scene; the full rebuild below replaces the
+                # handles wholesale and restores a valid frame.
+                pass
         for entry in self._entries.values():
             self._renderer.remove_mesh(entry["handle"])
         for handle in self._animation_handles:
@@ -3104,9 +3428,8 @@ class RetainedViewer:
         self._animation_handles.clear()
         self._animation_entries.clear()
         self._animation_frame_active = True
-        frame = self._animation_cache[index]
         for item in frame["meshes"]:
-            handle = MeshHandle(item["mesh"])
+            handle = MeshHandle(item["mesh"],scalar_range=item["appearance"].get("scalar_range"),colormap=item["appearance"].get("colormap"))
             for key, mesh, owners, resolver in item["chunks"]:
                 handle.add_chunk(
                     key,
@@ -3120,68 +3443,11 @@ class RetainedViewer:
             handle.set_visible(item["visible"])
             self._renderer.add_mesh(handle, **{
                 key: value for key, value in item["appearance"].items()
-                if key in {
-                    "color", "line_color", "point_color", "point_outline", "line_width", "point_size",
-                    "opacity", "cull_backface", "line_overlay", "point_overlay", "lit", "stipple",
-                    "stipple_phase",
-                    "pickable", "depth_only", "scalar_range",
-                    "layer",
-                    "mesh_lines",
-                    "face_colors", "back_color", "invalid_color",
-                }
+                if key in _ANIMATION_RENDERER_APPEARANCE_KEYS
             })
             self._animation_handles.append(handle)
-            self._animation_entries[id(handle)] = {
-                "handle": handle,
-                "owners": item["owners"],
-                "owner_resolver": item["owner_resolver"],
-                "appearance": item["appearance"],
-                "outline_groups": item.get("outline_groups"),
-                "outline_topology": handle.mesh.triangles,
-                "layer": item["layer"],
-                "tags": item["tags"],
-                "item": item["item"],
-                "face_colors": item["appearance"].get("face_colors"),
-                "semantic_elements": {
-                    key: np.asarray(value).copy()
-                    for key, value in item["semantic_elements"].items()
-                },
-                "hit_elements": {
-                    key: np.asarray(value).copy()
-                    for key, value in item["hit_elements"].items()
-                },
-                "semantic_lines": {
-                    key: np.asarray(value).copy()
-                    for key, value in item["semantic_lines"].items()
-                },
-                "hit_lines": {
-                    key: np.asarray(value).copy()
-                    for key, value in item["hit_lines"].items()
-                },
-                "semantic_points": {
-                    key: np.asarray(value).copy()
-                    for key, value in item["semantic_points"].items()
-                },
-                "hit_points": {
-                    key: np.asarray(value).copy()
-                    for key, value in item["hit_points"].items()
-                },
-                "chunk_semantics": self._copy_chunk_semantics(
-                    item.get("chunk_semantics", {})
-                ),
-            }
-        self._world_text = [dict(value) for value in frame["world_text"]]
-        self._thickness_legend = (
-            None if frame["legend"] is None else dict(frame["legend"])
-        )
-        self._highlighted_tags = frame["highlighted_tags"]
-        self._preselected_key = frame["preselected_key"]
-        self._preselection_from_hit = frame["preselection_from_hit"]
-        self._highlight_fill = frame["highlight_fill"]
-        self._highlight_outline = frame["highlight_outline"]
-        self._selection_index = None
-        self._selection_index_key = None
-        self._apply_highlight_masks()
+            self._animation_entries[id(handle)] = self._animation_entry(handle, item)
+        self._finish_animation_frame(frame)
 
 
     def play_animation(self, fps: float = 30, fast: Optional[bool] = None) -> None:
@@ -3236,23 +3502,23 @@ class RetainedViewer:
         scale = 0.5 * height / math.tan(self.camera.fov * 0.5)
         return tuple((0.5 * width + point[0] * scale / point[2], 0.5 * height - point[1] * scale / point[2]) for point in camera_polygon)
 
-    def _project_outline_segment(self, segment):
+    def _project_outline_segment(self, segment, frame=None):
+        if frame is None:
+            frame = _FrameProjection(self)
         if self._section_plane is not None:
             segment = self._section_plane.clip_segment(*segment)
             if segment is None:
                 return ()
             segment = np.asarray([point.to_tuple() for point in segment])
-        right, up, forward = self.camera.basis()
-        basis = np.asarray((right.to_tuple(), up.to_tuple(), forward.to_tuple()))
-        segment = (np.asarray(segment) - np.asarray(self.camera.position.to_tuple())) @ basis.T
-        for limit, keep_greater in ((self.camera.near, True), (self.camera.far, False)):
+        segment = (np.asarray(segment) - frame.origin) @ frame.basis.T
+        for limit, keep_greater in ((frame.near, True), (frame.far, False)):
             inside = segment[:, 2] >= limit if keep_greater else segment[:, 2] <= limit
             if not inside.any():
                 return ()
             if not inside.all():
                 amount = (limit - segment[0, 2]) / (segment[1, 2] - segment[0, 2])
                 segment[0 if not inside[0] else 1] = segment[0] + amount * (segment[1] - segment[0])
-        width, height = self._host.framebuffer_size()
+        width, height = frame.framebuffer
         scale = .5 * height / math.tan(self.camera.fov * .5)
         return tuple((.5 * width + point[0] * scale / point[2], .5 * height - point[1] * scale / point[2], point[2]) for point in segment)
 
@@ -3266,12 +3532,33 @@ class RetainedViewer:
                 return None
         return groups
 
-    def _surface_outline_segments(self, entry, chunk_id, mesh, triangles, world):
+    def _surface_outline_segments(self, entry, chunk_id, mesh, triangles, world, frame=None):
+        if frame is None:
+            frame = _FrameProjection(self)
         groups = self._outline_groups(entry, chunk_id, mesh)
+        depths = (np.asarray(world) - frame.origin) @ frame.forward
+        plane = self._section_plane
+        if (depths.size and depths.min() > frame.near and depths.max() < frame.far
+                and (plane is None or not plane.enabled)):
+            # Preserve the same semantic boundary loops; only projection is
+            # batched. No clipping can occur with every vertex inside depth.
+            camera = (np.asarray(world) - frame.origin) @ frame.basis.T
+            width, height = frame.framebuffer
+            scale = .5 * height / math.tan(self.camera.fov * .5)
+            screen = np.column_stack((
+                .5 * width + camera[:, 0] * scale / camera[:, 2],
+                .5 * height - camera[:, 1] * scale / camera[:, 2],
+                camera[:, 2],
+            ))
+            for loop in _surface_outline_loops(mesh, triangles, groups):
+                edges = [loop] if len(loop) == 2 else zip(loop, (*loop[1:], loop[0]))
+                for a, b in edges:
+                    yield (tuple(screen[a]), tuple(screen[b]))
+            return
         for loop in _surface_outline_loops(mesh, triangles, groups):
             edges = [loop] if len(loop) == 2 else zip(loop, (*loop[1:], loop[0]))
             for edge in edges:
-                points = self._project_outline_segment(world[list(edge)])
+                points = self._project_outline_segment(world[list(edge)], frame)
                 if points:
                     yield points
         # Clipping creates actual boundaries through filled triangles. Keep
@@ -3290,22 +3577,27 @@ class RetainedViewer:
                     amount = distance / (distance - distances[j])
                     intersections.append(polygon[i] + amount * (polygon[j] - polygon[i]))
             return intersections if len(intersections) == 2 else ()
-        forward = np.asarray(self.camera.basis()[2].to_tuple())
-        origin = np.asarray(self.camera.position.to_tuple())
+        # A depth limit can only cut a triangle when some vertex of the mesh
+        # actually reaches it; when the whole mesh sits strictly inside both
+        # bounds the per-triangle scan cannot produce a segment.
+        depths = (np.asarray(world) - frame.origin) @ frame.forward
+        limits = [limit for limit, crosses in (
+            (frame.near, bool(depths.size) and depths.min() <= frame.near),
+            (frame.far, bool(depths.size) and depths.max() >= frame.far)) if crosses]
         for triangle in triangles:
             polygon = world[mesh.triangles[triangle]]
             plane = self._section_plane
             if plane is not None and plane.enabled:
                 section = cut(polygon, np.asarray([plane.signed_distance(point) for point in polygon]))
                 if len(section):
-                    points = self._project_outline_segment(section)
+                    points = self._project_outline_segment(section, frame)
                     if points:
                         yield points
                 polygon = np.asarray([point.to_tuple() for point in plane.clip_polygon(polygon)]).reshape((-1, 3))
-            for limit in (self.camera.near, self.camera.far):
-                section = cut(polygon, (polygon - origin) @ forward - limit)
+            for limit in limits:
+                section = cut(polygon, (polygon - frame.origin) @ frame.forward - limit)
                 if len(section):
-                    points = self._project_outline_segment(section)
+                    points = self._project_outline_segment(section, frame)
                     if points:
                         yield points
 

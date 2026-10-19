@@ -1,0 +1,14 @@
+{
+  "command": [
+    "C:\\Python\\Python314\\python.exe",
+    "-m",
+    "pytest",
+    "tests/test_qt_update_pump.py",
+    "-q",
+    "-p",
+    "no:cacheprovider"
+  ],
+  "status": 0,
+  "process_wall_s": 2.3498625000356697,
+  "category": "fake/unit; no QApplication or window"
+}

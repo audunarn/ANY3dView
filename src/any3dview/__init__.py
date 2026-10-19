@@ -110,3 +110,6 @@ __all__ = [
     "shading",
     "shapes",
 ]
+
+from .appearance import MeshAppearance
+__all__ += ['MeshAppearance']

@@ -1,0 +1,11 @@
+{
+  "src/any3dview/qt.py": "efc0e09539cffa730fdaa243a91f82fc481c303116618de384eee82a9dd4c7f2",
+  "src/any3dview/retained_viewer.py": "7dd9a2ba6e69f23fdfb246629d0ecaa6807f78ea59e9fa45dcc9e29f83b2e4eb",
+  "src/any3dview/scheduler.py": "28f179734002e8f096c27c4c4cf3fbd33da84f45eca95cf213e52b6124aa545e",
+  "tests/test_qt_update_pump.py": "7e2ce4bf81696587f35262158a9570a9a3bc9c39b2bb82a2ff4766d5c58c769a",
+  "tests/test_qt_software_responsiveness.py": "8dc91d68d0033f01d9b8d7fecf7db96ec20c3f224972c2b6cc0cb92bbcc55b47",
+  "tests/test_performance_review_oracle.py": "bfcdb27c52e10361bae4d5d7e842951089e12692d2bdf9394701b87036b77108",
+  "tools/bench_barge_review.py": "e89ff9a2317c36e20cc769f862f73e328224f993f5db96e5477e4bf21acdba18",
+  "tools/compare_barge_review.py": "bf5ebf76cd964fff71148da171d109c6ab01710f288a78c066b4d157037c304a",
+  "src/any3dview/gpu/renderer.py": "5e6317ca41db7ca52a5d1b8bd29380cc8c61b305b8d345f92844183de3cd02bf"
+}

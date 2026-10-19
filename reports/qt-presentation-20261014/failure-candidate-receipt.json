@@ -1,0 +1,14 @@
+{
+  "command": [
+    "C:\\Python\\Python314\\python.exe",
+    "-m",
+    "pytest",
+    "tests/test_qt_deferred_failure.py",
+    "-q",
+    "-p",
+    "no:cacheprovider"
+  ],
+  "status": 0,
+  "process_wall_s": 2.5451037000166252,
+  "category": "fake/unit; no QApplication or window"
+}

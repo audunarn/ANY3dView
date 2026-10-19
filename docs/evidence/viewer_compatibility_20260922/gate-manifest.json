@@ -1,0 +1,99 @@
+{
+  "gate": "Coordinated viewer compatibility and draft review preparation",
+  "date": "2026-09-22",
+  "status": "Both viewer compatibility matrices passed (60 jobs). Coordinated merge readiness blocked by broader ANYmesh native-worker CI failures.",
+  "candidates": {
+    "ANY3dView": {
+      "sha": "82b6aeed9a1ca2dd2c8260ad40284916e4e67d5d",
+      "pr": "https://github.com/audunarn/ANY3dView/pull/3",
+      "run": 35729422349
+    },
+    "ANYtk3D": {
+      "sha": "7e2456ec8bad38c5168b1812dd399d5319953a98",
+      "pr": "https://github.com/audunarn/ANYtk3D/pull/3",
+      "run": 35728333917,
+      "attempt": 2
+    },
+    "ANYmesh": {
+      "sha": "4d00022262912c4512ceb5447fff31bb32d470dc",
+      "pr": "https://github.com/audunarn/ANYmesh/pull/7",
+      "run": 35727031691
+    }
+  },
+  "consumers": {
+    "ANYfem": "18b4d3014f4f515d96ac5b027f51bbe92b57ba2b",
+    "ANYstructure": "4666c462c781af6e0c10d56cc3b7ac8027dce999"
+  },
+  "local_evidence": [
+    {
+      "log": "core-candidate-tests.log",
+      "result": "182 passed, 7 native loader failures in sandbox; all 9 GPU tests then passed with normal desktop access"
+    },
+    {
+      "log": "core-candidate-native-loader.log",
+      "result": "9 passed"
+    },
+    {
+      "log": "tk-candidate-tests.log",
+      "result": "178 passed, 3 native_gui deselected"
+    },
+    {
+      "log": "review-corrections-tests-fixed.log",
+      "result": "34 passed; planar triangle-budget correction"
+    },
+    {
+      "log": "core-capture-resize.log",
+      "result": "9 passed; current GPU code including capture after grow/shrink"
+    },
+    {
+      "log": "ANY3dView-licensing.log",
+      "result": "exit 0"
+    },
+    {
+      "log": "ANYtk3D-licensing.log",
+      "result": "exit 0"
+    },
+    {
+      "log": "core-final-linux-desktop.log",
+      "result": "190 core passed; 178 software viewer passed; 3 native pointer tests deselected"
+    }
+  ],
+  "preserved_failures": [
+    {
+      "run": 35727029191,
+      "issue": "Linux CI missing libGL.so development link"
+    },
+    {
+      "run": 35727837553,
+      "issue": "Consumer lookup assumed main; ANYstructure default is master"
+    },
+    {
+      "run": 35728333917,
+      "attempt": 1,
+      "issue": "Linux TkGL drawable absent during initialization"
+    },
+    {
+      "run": 35728943071,
+      "issue": "GPU capture used initial framebuffer size after resize"
+    }
+  ],
+  "scope": "Original dirty work preserved; isolated candidate excludes unrelated GPU batching and Windows parent mapping edits. Includes pre-existing host adapter prerequisite commit 721b3be5c2adb2b42b9df19450337c756240455e.",
+  "limits": [
+    "Self-review only; no independent acceptance",
+    "No native pointer-input qualification",
+    "No merge, version bump, publication or release qualification"
+  ],
+  "mesh_blocker": {
+    "job": 106743081817,
+    "platform": "Ubuntu Python 3.11",
+    "result": "21 failed, 1479 passed, 54 skipped",
+    "cause": "quad_mcf_worker binary absent in existing quadrilateral integration/qualification tests",
+    "scope": "Existing pytest job installs dev,planar extras, not the changed gui3d extra. No mesher implementation or native worker change is included in this candidate.",
+    "log": "C:\\Users\\AudunArnesenNyhus\\AppData\\Local\\Temp\\viewer-gate-mesh-106743081817.log"
+  },
+  "ci_records": [
+    "core-final-ci.json",
+    "tk-final-ci.json",
+    "mesh-handoff-ci.json"
+  ]
+}

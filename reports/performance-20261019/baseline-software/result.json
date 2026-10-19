@@ -1,0 +1,292 @@
+{
+  "backend": "software",
+  "source": "C:\\Github\\ANY3dView\\reports\\performance-20261019\\baseline-src",
+  "python": "3.14.2 (tags/v3.14.2:df79316, Dec  5 2025, 17:18:21) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "viewport": [
+    1000,
+    700
+  ],
+  "dpr": 1.0,
+  "fixture": "Current Examples floating_barge_section; planar display tessellation at0.7m, beams retained; no scientific mesh",
+  "triangles": 5280,
+  "entries": 192,
+  "orbit": {
+    "samples_ms": [
+      263.0023999954574,
+      228.28939999453723,
+      274.054600042291,
+      235.70080002536997,
+      233.78119996050373,
+      262.49960000859573,
+      233.36970002856106,
+      231.74090002430603,
+      258.93080001696944,
+      221.26710001612082,
+      224.53649999806657,
+      260.2230000193231
+    ],
+    "median_ms": 234.74099999293685,
+    "p95_ms": 267.9758900165325
+  },
+  "diagnostics": {
+    "schema": "any3dview.qt.lifecycle",
+    "version": 1,
+    "active_backend": "software",
+    "closed": false,
+    "context_valid": false,
+    "context_ready": false,
+    "gl_vendor": "",
+    "gl_renderer": "",
+    "gl_version": "",
+    "lifecycle_counters": {
+      "initialize_gl_attempts": 0,
+      "context_recreations": 0,
+      "gl_release_attempts": 0,
+      "gl_release_failures": 0,
+      "destroy_calls": 0
+    },
+    "lifecycle_errors": []
+  },
+  "picks": [
+    [],
+    [
+      [
+        "ent_edge144",
+        15983
+      ],
+      [
+        "ent_edge49",
+        15888
+      ],
+      [
+        "ent_edge87",
+        15926
+      ],
+      [
+        "ent_edge88",
+        15927
+      ],
+      [
+        "ent_edge106",
+        15945
+      ],
+      [
+        "ent_edge2",
+        15841
+      ],
+      [
+        "ent_edge5",
+        15844
+      ],
+      [
+        "ent_edge46",
+        15885
+      ],
+      [
+        "ent_edge45",
+        15884
+      ],
+      [
+        "ent_edge109",
+        15948
+      ],
+      [
+        "ent_edge103",
+        15942
+      ],
+      [
+        "ent_edge143",
+        3797
+      ],
+      [
+        "ent_edge48",
+        15887
+      ],
+      [
+        "ent_edge142",
+        3770
+      ],
+      [
+        "ent_edge52",
+        15891
+      ],
+      [
+        "ent_edge89",
+        15928
+      ],
+      [
+        "ent_edge42",
+        15881
+      ],
+      [
+        "ent_edge86",
+        15925
+      ],
+      [
+        "ent_element_face124_0",
+        246
+      ],
+      [
+        "ent_element_face361_0",
+        721
+      ],
+      [
+        "ent_element_face133_0",
+        265
+      ],
+      [
+        "ent_element_face345_0",
+        688
+      ],
+      [
+        "ent_element_face360_0",
+        719
+      ],
+      [
+        "ent_element_face344_0",
+        687
+      ],
+      [
+        "ent_element_face134_0",
+        266
+      ],
+      [
+        "ent_element_face123_0",
+        245
+      ],
+      [
+        "ent_element_face107_0",
+        212
+      ],
+      [
+        "ent_element_face108_0",
+        214
+      ],
+      [
+        "ent_element_face150_0",
+        299
+      ],
+      [
+        "ent_element_face149_0",
+        297
+      ],
+      [
+        "ent_element_face132_0",
+        263
+      ],
+      [
+        "ent_element_face125_0",
+        248
+      ],
+      [
+        "ent_element124",
+        246
+      ],
+      [
+        "ent_face1",
+        246
+      ],
+      [
+        "ent_element361",
+        721
+      ],
+      [
+        "ent_face5",
+        721
+      ],
+      [
+        "ent_element133",
+        265
+      ],
+      [
+        "ent_face2",
+        265
+      ],
+      [
+        "ent_element345",
+        688
+      ],
+      [
+        "ent_element360",
+        719
+      ],
+      [
+        "ent_element344",
+        687
+      ],
+      [
+        "ent_element134",
+        266
+      ],
+      [
+        "ent_element123",
+        245
+      ],
+      [
+        "ent_element107",
+        212
+      ],
+      [
+        "ent_element108",
+        214
+      ],
+      [
+        "ent_element150",
+        299
+      ],
+      [
+        "ent_element149",
+        297
+      ],
+      [
+        "ent_element132",
+        263
+      ],
+      [
+        "ent_element125",
+        248
+      ]
+    ],
+    [],
+    [],
+    []
+  ],
+  "field_index": {
+    "samples_ms": [
+      253.03630001144484,
+      261.7494000005536,
+      290.44900002190843,
+      251.82890001451597
+    ],
+    "median_ms": 257.3928500059992,
+    "p95_ms": 286.1440600187052
+  },
+  "animation": {
+    "samples_ms": [
+      238.68149996269494,
+      237.103899999056,
+      276.4918000320904,
+      238.41169994557276,
+      244.25889999838546,
+      266.01309998659417
+    ],
+    "median_ms": 241.4701999805402,
+    "p95_ms": 273.87212502071634,
+    "geometry_uploads": 1152
+  },
+  "hover": {
+    "calls": 1,
+    "burst_and_settle_ms": 495.9258000017144
+  },
+  "idle": {
+    "window_ms": 200,
+    "timer_ticks": 102
+  },
+  "hashes": {
+    "qt.py": "8fd5b0ffb75cb7040e7ace09307e17c3648290b90758d849ae6a58f806478dfc",
+    "retained_viewer.py": "24009ba72d10d66b81e7d13db71bbc201cb21bb385fb5fea29e4535d3eb923bb",
+    "scheduler.py": "dab3bd776c5c37c950b3ecae751448f860da49f3625baf57ba6504369a61ae62",
+    "gpu/renderer.py": "5e6317ca41db7ca52a5d1b8bd29380cc8c61b305b8d345f92844183de3cd02bf"
+  }
+}

@@ -28,6 +28,17 @@ from .shapes import Mesh
 
 
 @dataclass(frozen=True, slots=True)
+class PresentedFrame:
+    """One successfully swapped frame, timed with ``perf_counter_ns``.
+
+    This measures host presentation completion, not the display's scan-out time.
+    """
+
+    sequence: int
+    presented_ns: int
+
+
+@dataclass(frozen=True, slots=True)
 class Pick:
     """Legacy tag-based hit returned by click and hover callbacks."""
 

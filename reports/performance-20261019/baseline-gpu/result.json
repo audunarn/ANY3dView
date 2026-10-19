@@ -1,0 +1,100 @@
+{
+  "backend": "gpu",
+  "source": "C:\\Github\\ANY3dView\\reports\\performance-20261019\\baseline-src",
+  "python": "3.14.2 (tags/v3.14.2:df79316, Dec  5 2025, 17:18:21) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "viewport": [
+    1000,
+    700
+  ],
+  "dpr": 1.0,
+  "fixture": "Current Examples floating_barge_section; planar display tessellation at0.7m, beams retained; no scientific mesh",
+  "triangles": 5280,
+  "entries": 5,
+  "orbit": {
+    "samples_ms": [
+      3.989799995906651,
+      0.053499999921768904,
+      0.009299954399466515,
+      0.007199996616691351,
+      0.006500049494206905,
+      0.006700051017105579,
+      0.006599992047995329,
+      0.006999995093792677,
+      0.00689999433234334,
+      0.006299989763647318,
+      0.006199989002197981,
+      0.006699992809444666
+    ],
+    "median_ms": 0.00680002267472446,
+    "p95_ms": 1.824834998114963
+  },
+  "diagnostics": {
+    "schema": "any3dview.qt.lifecycle",
+    "version": 1,
+    "active_backend": "gpu",
+    "closed": false,
+    "context_valid": true,
+    "context_ready": true,
+    "gl_vendor": "NVIDIA Corporation",
+    "gl_renderer": "NVIDIA GeForce RTX 3090 Ti/PCIe/SSE2",
+    "gl_version": "3.3.0 NVIDIA 617.42",
+    "lifecycle_counters": {
+      "initialize_gl_attempts": 1,
+      "context_recreations": 0,
+      "gl_release_attempts": 0,
+      "gl_release_failures": 0,
+      "destroy_calls": 0
+    },
+    "lifecycle_errors": []
+  },
+  "picks": [
+    [],
+    [
+      [
+        "ent_edge106",
+        89
+      ]
+    ],
+    [],
+    [],
+    []
+  ],
+  "field_index": {
+    "samples_ms": [
+      259.8996000015177,
+      266.1109000327997,
+      283.04409998236224,
+      245.78449997352436
+    ],
+    "median_ms": 263.0052500171587,
+    "p95_ms": 280.50411998992786
+  },
+  "animation": {
+    "samples_ms": [
+      17.19980000052601,
+      10.536699963267893,
+      10.095100034959614,
+      9.422799979802221,
+      10.675399971660227,
+      9.907200001180172
+    ],
+    "median_ms": 10.315899999113753,
+    "p95_ms": 15.568699993309565,
+    "geometry_uploads": 30
+  },
+  "hover": {
+    "calls": 100,
+    "burst_and_settle_ms": 167.9827999905683
+  },
+  "idle": {
+    "window_ms": 200,
+    "timer_ticks": 102
+  },
+  "hashes": {
+    "qt.py": "8fd5b0ffb75cb7040e7ace09307e17c3648290b90758d849ae6a58f806478dfc",
+    "retained_viewer.py": "24009ba72d10d66b81e7d13db71bbc201cb21bb385fb5fea29e4535d3eb923bb",
+    "scheduler.py": "dab3bd776c5c37c950b3ecae751448f860da49f3625baf57ba6504369a61ae62",
+    "gpu/renderer.py": "5e6317ca41db7ca52a5d1b8bd29380cc8c61b305b8d345f92844183de3cd02bf"
+  }
+}

@@ -1,0 +1,81 @@
+FFF                                                                      [100%]
+================================== FAILURES ===================================
+_______ test_animation_changed_chunk_data_reaches_actual_display_handle _______
+
+    def test_animation_changed_chunk_data_reaches_actual_display_handle():
+        view=Scene(); handle=view.add_mesh_arrays(mesh())
+        handle.add_chunk('part',mesh())
+        view.begin_animation_cache(); view.capture_animation_frame()
+        handle.replace_chunk('part',mesh(shift=.25,value=7.))
+        view.capture_animation_frame()
+        view._show_animation_frame(0); view._show_animation_frame(1)
+        actual=dict(view._animation_handles[0].chunks)['part']
+>       np.testing.assert_array_equal(actual.positions,mesh(shift=.25).positions)
+E       AssertionError: 
+E       Arrays are not equal
+E       
+E       Mismatched elements: 9 / 9 (100%)
+E       First 5 mismatches are at indices:
+E        [0, 0]: 0.0 (ACTUAL), 0.25 (DESIRED)
+E        [0, 1]: 0.0 (ACTUAL), 0.25 (DESIRED)
+E        [0, 2]: 0.0 (ACTUAL), 0.25 (DESIRED)
+E        [1, 0]: 1.0 (ACTUAL), 1.25 (DESIRED)
+E        [1, 1]: 0.0 (ACTUAL), 0.25 (DESIRED)
+E       Max absolute difference among violations: 0.25
+E       Max relative difference among violations: 1.
+E        ACTUAL: array([[0., 0., 0.],
+E              [1., 0., 0.],
+E              [0., 1., 0.]])
+E        DESIRED: array([[0.25, 0.25, 0.25],
+E              [1.25, 0.25, 0.25],
+E              [0.25, 1.25, 0.25]])
+
+tests\test_performance_review_oracle.py:37: AssertionError
+_________ test_animation_changed_normals_reach_actual_display_handle __________
+
+    def test_animation_changed_normals_reach_actual_display_handle():
+        view=Scene(); view.add_mesh_arrays(mesh())
+        view.begin_animation_cache(); view.capture_animation_frame()
+        view.capture_animation_frame()
+        view._animation_cache[1]['meshes'][0]['mesh']=mesh(normal=-1.)
+        view._show_animation_frame(0); view._show_animation_frame(1)
+>       np.testing.assert_array_equal(view._animation_handles[0].mesh.normals,mesh(normal=-1.).normals)
+E       AssertionError: 
+E       Arrays are not equal
+E       
+E       Mismatched elements: 3 / 9 (33.3%)
+E       Mismatch at indices:
+E        [0, 2]: 1.0 (ACTUAL), -1.0 (DESIRED)
+E        [1, 2]: 1.0 (ACTUAL), -1.0 (DESIRED)
+E        [2, 2]: 1.0 (ACTUAL), -1.0 (DESIRED)
+E       Max absolute difference among violations: 2.
+E       Max relative difference among violations: 2.
+E        ACTUAL: array([[0., 0., 1.],
+E              [0., 0., 1.],
+E              [0., 0., 1.]])
+E        DESIRED: array([[ 0.,  0., -1.],
+E              [ 0.,  0., -1.],
+E              [ 0.,  0., -1.]])
+
+tests\test_performance_review_oracle.py:50: AssertionError
+_____ test_scheduler_error_remains_fail_fast_and_pending_work_can_resume ______
+
+    def test_scheduler_error_remains_fail_fast_and_pending_work_can_resume():
+        scheduler=ViewerScheduler(); seen=[]; wakes=[]
+        scheduler.set_notifier(lambda:wakes.append(1))
+        def fail(): raise ValueError('original failure')
+        scheduler.submit(fail); scheduler.submit(seen.append,'later')
+        with pytest.raises(ValueError,match='original failure'): scheduler.drain()
+>       assert seen==[], 'Later callbacks must not execute before the failure is observed'
+E       AssertionError: Later callbacks must not execute before the failure is observed
+E       assert ['later'] == []
+E         
+E         Left contains one more item: 'later'
+E         Use -v to get more diff
+
+tests\test_performance_review_oracle.py:59: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_performance_review_oracle.py::test_animation_changed_chunk_data_reaches_actual_display_handle
+FAILED tests/test_performance_review_oracle.py::test_animation_changed_normals_reach_actual_display_handle
+FAILED tests/test_performance_review_oracle.py::test_scheduler_error_remains_fail_fast_and_pending_work_can_resume
+3 failed in 2.12s

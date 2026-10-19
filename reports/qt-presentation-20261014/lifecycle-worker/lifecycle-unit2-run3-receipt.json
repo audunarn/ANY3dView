@@ -1,0 +1,26 @@
+{
+ "command": "C:\\Python\\Python314\\python.exe -m pytest tests/test_qt_resource_lifecycle.py -p no:cacheprovider -q",
+ "cwd": "C:\\Github\\ANY3dView",
+ "python": "C:\\Python\\Python314\\python.exe",
+ "env": {
+  "PYTHONDONTWRITEBYTECODE": "1"
+ },
+ "timeout_seconds": 15.0,
+ "timed_out": false,
+ "exit": 1,
+ "wall_seconds_raw": 1.8778075000000172,
+ "wall_seconds_repr": "1.8778075000000172",
+ "budget": {
+  "total": 30.0,
+  "old_spent_upper": 6.1615,
+  "new_spent_before": 0.0,
+  "remaining_before": 23.8385,
+  "remaining_after": 21.960692499999983
+ },
+ "source_sha256": {
+  "src/any3dview/qt.py": "1f3b6c68887ed8a4da45b7b5a66322a85126c323cc03798a00a94f71b0c87d60",
+  "tests/test_qt_resource_lifecycle.py": "f92ac1a9d0a44dea71e7c379ff1f9e8916314623b69d7b9b70dc929109377400"
+ },
+ "stdout": "..................F.............                                         [100%]\n================================== FAILURES ===================================\n__ TestDestroyResilience.test_stop_animation_failure_still_cancels_and_hides __\n\nself = <test_qt_resource_lifecycle.TestDestroyResilience object at 0x0000025C86DB3390>\n\n    def test_stop_animation_failure_still_cancels_and_hides(self):\n        hud, hud_calls = make_resource(\"hud\")\n        renderer, renderer_calls = make_resource(\"renderer\")\n        owner = make_destroyable(make_owner(\n            hud=hud, renderer=renderer, gl_context=make_context(),\n            surface=make_surface(valid=True)))\n        def broken_animation():\n            raise RuntimeError(\"animation boom\")\n        owner.stop_animation = broken_animation\n        cancelled = []\n>       owner._timers = {self.make_timer(cancelled)}\n                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       TypeError: cannot use 'types.SimpleNamespace' as a set element (unhashable type: 'types.SimpleNamespace')\n\ntests\\test_qt_resource_lifecycle.py:383: TypeError\n=========================== short test summary info ===========================\nFAILED tests/test_qt_resource_lifecycle.py::TestDestroyResilience::test_stop_animation_failure_still_cancels_and_hides - TypeError: cannot use 'types.SimpleNamespace' as a set element (unhashable type: 'types.SimpleNamespace')\n1 failed, 31 passed in 0.39s\n",
+ "stderr": ""
+}

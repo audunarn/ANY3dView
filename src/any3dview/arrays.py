@@ -89,6 +89,8 @@ class MeshArrays:
     # Optional unit normals, one per position, used for smooth shading instead
     # of the per-triangle normal.  They describe the undeformed geometry.
     normals: Optional[np.ndarray] = None
+    # Explicit dense element-table index per line; appended for positional ABI.
+    line_to_element: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
         positions = _float_array(self.positions, "positions", (None, 3))
@@ -116,12 +118,24 @@ class MeshArrays:
         if mapping is not None and len(mapping) != len(triangles):
             raise ValueError("triangle_to_element must have one value per triangle")
 
+        if self.line_to_element is not None and np.asarray(self.line_to_element).dtype.kind not in "iu":
+            raise ValueError("line_to_element must contain integer indices")
+        line_mapping = None if self.line_to_element is None else _index_array(self.line_to_element,"line_to_element",None)
+        if line_mapping is not None and len(line_mapping) != (0 if lines is None else len(lines)):
+            raise ValueError("line_to_element must have one value per line")
+
         explicit_lengths = [
             len(value)
             for value in (self.element_ids, self.element_scalars, self.active_elements)
             if value is not None
         ]
-        if mapping is not None and mapping.size:
+        if line_mapping is not None:
+            triangle_extent = int(mapping.max())+1 if mapping is not None and mapping.size else len(triangles) if mapping is None else 0
+            mapped_extent = max(triangle_extent,int(line_mapping.max())+1 if line_mapping.size else 0)
+            element_count = explicit_lengths[0] if explicit_lengths else mapped_extent
+            if any(length != element_count for length in explicit_lengths) or mapped_extent > element_count:
+                raise ValueError("element fields do not match explicit triangle/line mappings")
+        elif mapping is not None and mapping.size:
             element_count = int(mapping.max()) + 1
             if explicit_lengths and any(length != element_count for length in explicit_lengths):
                 raise ValueError("element fields do not match triangle_to_element")
@@ -165,6 +179,7 @@ class MeshArrays:
             ("lines", lines),
             ("point_indices", points),
             ("triangle_to_element", mapping),
+            ("line_to_element", line_mapping),
             ("node_ids", node_ids),
             ("element_ids", element_ids),
             ("displacements", displacements),
@@ -185,6 +200,11 @@ class MeshArrays:
 
     @property
     def element_count(self) -> int:
+        if self.line_to_element is not None:
+            for value in (self.element_ids,self.element_scalars,self.active_elements):
+                if value is not None:return len(value)
+            triangle_extent = int(self.triangle_to_element.max())+1 if self.triangle_to_element is not None and self.triangle_to_element.size else self.triangle_count if self.triangle_to_element is None else 0
+            return max(triangle_extent,int(self.line_to_element.max())+1 if self.line_to_element.size else 0)
         if self.triangle_to_element is not None and self.triangle_to_element.size:
             return int(self.triangle_to_element.max()) + 1
         for value in (self.element_ids, self.element_scalars, self.active_elements):

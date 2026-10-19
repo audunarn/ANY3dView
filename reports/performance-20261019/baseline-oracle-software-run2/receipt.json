@@ -1,0 +1,17 @@
+{
+  "command": [
+    "C:/Python/Python314/python.exe",
+    "tools/bench_barge_review.py",
+    "--source",
+    "reports/performance-20261019/baseline-src",
+    "--out",
+    "reports/performance-20261019/baseline-oracle-software2",
+    "--backend",
+    "software",
+    "--oracle"
+  ],
+  "timeout_s": 120.0,
+  "exit_code": 0,
+  "timed_out": false,
+  "process_wall_s": 7.750136399990879
+}

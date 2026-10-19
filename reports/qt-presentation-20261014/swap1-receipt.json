@@ -1,0 +1,16 @@
+{
+  "command": [
+    "C:\\Python\\Python314\\python.exe",
+    "C:\\Github\\ANY3dView\\reports\\qt-presentation-20261014\\probe.py",
+    "--swap",
+    "1",
+    "--out",
+    "C:\\Github\\ANY3dView\\reports\\qt-presentation-20261014\\swap1.json"
+  ],
+  "python": "C:\\Python\\Python314\\python.exe",
+  "probe_sha256": "81922046066cf643c74de7024b158c3046d040d4518c69b5ecc387294315a899",
+  "status": 0,
+  "process_wall_s": 8.604575000004843,
+  "cumulative_gui_s": 535.1401313000049,
+  "remaining_gui_s": 64.85986869999516
+}

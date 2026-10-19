@@ -1,4 +1,4 @@
-"""Incremental renderer-neutral layer for ANYgeometry schema-4 models."""
+"""Incremental renderer-neutral layer for ANYgeometry owner-decoded models."""
 
 from __future__ import annotations
 

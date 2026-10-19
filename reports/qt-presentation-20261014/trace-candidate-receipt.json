@@ -1,0 +1,14 @@
+{
+  "command": [
+    "C:\\Python\\Python314\\python.exe",
+    "-m",
+    "pytest",
+    "tests/test_qt_camera_trace.py",
+    "-q",
+    "-p",
+    "no:cacheprovider"
+  ],
+  "status": 0,
+  "process_wall_s": 1.9213039000169374,
+  "category": "fake/unit; no QApplication or window"
+}

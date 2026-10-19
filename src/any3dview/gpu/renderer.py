@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-from functools import lru_cache
+from functools import lru_cache, wraps
 import math
 import re
 from typing import Any, Optional, Sequence
@@ -19,9 +19,49 @@ except ImportError as error:  # pragma: no cover - isolated-wheel coverage
     ) from error
 
 from ..arrays import MeshArrays
+from ..appearance import validated_appearance,palette_data
 from ..clipping import SectionPlane
 from ..core import Camera3D, _interpolate_thickness_color, parse_color
 from ..retained import DirtyGenerations, MeshHandle
+
+
+class _ResourceStage:
+    """Own successfully returned GL allocations until a build commits."""
+    _factories = frozenset({"buffer","texture","vertex_array","depth_renderbuffer","framebuffer"})
+
+    def __init__(self,ctx):
+        self.ctx=ctx
+        self.resources=[]
+
+    def __getattr__(self,name):
+        value=getattr(self.ctx,name)
+        if name not in self._factories:return value
+        def allocate(*args,**kwargs):
+            resource=value(*args,**kwargs)
+            self.resources.append(resource)
+            return resource
+        return allocate
+
+    def release(self):
+        for resource in reversed(self.resources):
+            try:resource.release()
+            except BaseException:pass  # preserve the primary allocation failure
+        self.resources.clear()
+
+
+def _release_failed_allocations(method):
+    @wraps(method)
+    def build(cls,ctx,*args,**kwargs):
+        stage=_ResourceStage(ctx)
+        try:
+            result=method(cls,stage,*args,**kwargs)
+            result.ctx=ctx
+            stage.resources.clear()
+            return result
+        except BaseException:
+            stage.release()
+            raise
+    return build
 from ..shading import Light
 
 
@@ -328,14 +368,22 @@ uniform float u_near;
 // with round caps drawn as a triangle fan of 2 * (k + 1) + 2 vertices, which
 // fills the wedge at a polyline joint and keeps the rim antialiased by MSAA.
 uniform int u_cap_segments;
+uniform bool u_node_scalars;
+uniform sampler2D u_node_values;
+uniform uint u_node_width;
+in uvec2 in_endpoint_nodes;
 in vec3 in_start;
 in vec3 in_end;
 in vec3 in_start_displacement;
 in vec3 in_end_displacement;
 out vec3 v_relative;
 out float v_depth;
+out float v_node_scalar;
 flat out uint v_primitive;
+ivec2 node_address(uint index) {return ivec2(int(index % u_node_width),int(index / u_node_width));}
 void main() {
+    float start_scalar = u_node_scalars ? texelFetch(u_node_values,node_address(in_endpoint_nodes.x),0).r : 0.0;
+    float end_scalar = u_node_scalars ? texelFetch(u_node_values,node_address(in_endpoint_nodes.y),0).r : 0.0;
     vec3 start = u_linear * (in_start + u_deformation_scale * in_start_displacement)
         + u_origin_from_camera;
     vec3 end = u_linear * (in_end + u_deformation_scale * in_end_displacement)
@@ -347,10 +395,12 @@ void main() {
     bool segment_visible = start_depth >= u_near || end_depth >= u_near;
     if (segment_visible && start_depth < u_near) {
         float amount = (u_near - start_depth) / (end_depth - start_depth);
+        start_scalar = mix(start_scalar,end_scalar,amount);
         start = mix(start, end, amount);
         view_start = mix(view_start, view_end, amount);
     } else if (segment_visible && end_depth < u_near) {
         float amount = (u_near - end_depth) / (start_depth - end_depth);
+        end_scalar = mix(end_scalar,start_scalar,amount);
         end = mix(end, start, amount);
         view_end = mix(view_end, view_start, amount);
     }
@@ -394,6 +444,7 @@ void main() {
     float depth_start = -view_start.z;
     float depth_end = -view_end.z;
     v_depth = centre ? 0.5 * (depth_start + depth_end) : (at_end ? depth_end : depth_start);
+    v_node_scalar = centre ? 0.5*(start_scalar+end_scalar) : (at_end ? end_scalar : start_scalar);
     v_primitive = uint(gl_InstanceID);
 }
 """
@@ -401,6 +452,19 @@ void main() {
 _LINE_FRAGMENT = """
 #version 330
 uniform vec3 u_color;
+uniform vec3 u_invalid_color;
+uniform vec3 u_selection_color;
+uniform bool u_has_scalars;
+uniform bool u_node_scalars;
+uniform bool u_has_line_mapping;
+uniform vec2 u_scalar_range;
+uniform uint u_element_width;
+uniform usampler2D u_line_to_element;
+uniform usampler2D u_active_elements;
+uniform usampler2D u_selected_elements;
+uniform usampler2D u_semantic_elements;
+uniform sampler2D u_element_scalars;
+uniform sampler2D u_colormap;
 uniform vec3 u_highlight_color;
 uniform vec3 u_preselection_color;
 uniform float u_opacity;
@@ -411,6 +475,7 @@ uniform vec3 u_section_normal;
 uniform float u_section_relative_offset;
 in vec3 v_relative;
 in float v_depth;
+in float v_node_scalar;
 flat in uint v_primitive;
 //@OIT_EMIT@
 ivec2 address(uint index, uint width) {
@@ -418,21 +483,39 @@ ivec2 address(uint index, uint width) {
 }
 void main() {
     if (u_section_enabled && dot(u_section_normal, v_relative) < u_section_relative_offset) discard;
+    uint element = u_has_line_mapping ? texelFetch(u_line_to_element,address(v_primitive,u_line_width),0).r : 0u;
+    if (u_has_line_mapping && texelFetch(u_active_elements,address(element,u_element_width),0).r == 0u) discard;
     vec3 color = u_color;
+    if (u_has_scalars && (u_node_scalars || u_has_line_mapping)) {
+        float value = u_node_scalars ? v_node_scalar : texelFetch(u_element_scalars,address(element,u_element_width),0).r;
+        if (isnan(value)) color = u_invalid_color;
+        else {
+            float span = max(1.0e-20,u_scalar_range.y-u_scalar_range.x);
+            color = texture(u_colormap,vec2(clamp((value-u_scalar_range.x)/span,0.0,1.0),0.5)).rgb;
+        }
+    }
     uint semantic = texelFetch(
         u_semantic_lines, address(v_primitive, u_line_width), 0
     ).r;
+    if (u_has_line_mapping) semantic |= texelFetch(u_semantic_elements,address(element,u_element_width),0).r;
     if ((semantic & 4u) != 0u) discard;
     if ((semantic & 2u) != 0u)
         color = mix(color, u_preselection_color, 0.85);
     else if ((semantic & 1u) != 0u)
         color = mix(color, u_highlight_color, 0.80);
+    else if (u_has_line_mapping && texelFetch(u_selected_elements,address(element,u_element_width),0).r != 0u)
+        color = mix(color,u_selection_color,0.65);
     emit_color(color, u_opacity, v_depth);
 }
 """
 
 _LINE_PICK_FRAGMENT = """
 #version 330
+uniform bool u_has_line_mapping;
+uniform uint u_element_width;
+uniform usampler2D u_line_to_element;
+uniform usampler2D u_active_elements;
+uniform usampler2D u_semantic_elements;
 uniform bool u_section_enabled;
 uniform vec3 u_section_normal;
 uniform float u_section_relative_offset;
@@ -450,6 +533,11 @@ void main() {
     uint semantic = texelFetch(
         u_semantic_lines, address(v_primitive, u_line_width), 0
     ).r;
+    if (u_has_line_mapping) {
+        uint element = texelFetch(u_line_to_element,address(v_primitive,u_line_width),0).r;
+        if (texelFetch(u_active_elements,address(element,u_element_width),0).r == 0u) discard;
+        semantic |= texelFetch(u_semantic_elements,address(element,u_element_width),0).r;
+    }
     if ((semantic & 4u) != 0u) discard;
     if (u_section_enabled && dot(u_section_normal, v_relative) < u_section_relative_offset) discard;
     pick_id = u_pick_enabled ? u_pick_base + v_primitive + 1u : 0u;
@@ -775,8 +863,13 @@ class _Chunk:
     # True when some vertex is shared by two or more lines, i.e. the chunk has
     # joints whose overlap must be unioned when it is drawn translucent.
     lines_joined: bool = False
+    line_endpoint_buffer: Any = None
+    line_element_map: Any = None
+    node_scalar_texture: Any = None
+    node_scalar_width: int = 1
 
     @classmethod
+    @_release_failed_allocations
     def create(
         cls,
         ctx: Any,
@@ -841,6 +934,9 @@ class _Chunk:
         render_vao = ctx.vertex_array(render_program, render_content, index_buffer)
         pick_vao = ctx.vertex_array(pick_program, geometry_content, index_buffer)
         line_buffer = None
+        line_endpoint_buffer = None
+        node_scalar_texture = None
+        node_scalar_width = 1
         line_render_vao = None
         line_pick_vao = None
         if mesh.lines is not None and len(mesh.lines):
@@ -856,7 +952,9 @@ class _Chunk:
                     "in_end_displacement",
                 )
             ]
-            line_render_vao = ctx.vertex_array(line_program, line_content)
+            line_endpoint_buffer = ctx.buffer(np.ascontiguousarray(mesh.lines,dtype=np.uint32).tobytes())
+            node_scalar_texture,node_scalar_width = _packed_texture(ctx,node_scalar_values,"f4")
+            line_render_vao = ctx.vertex_array(line_program,[*line_content,(line_endpoint_buffer,"2u /i","in_endpoint_nodes")])
             line_pick_vao = ctx.vertex_array(line_pick_program, line_content)
         point_index_buffer = None
         point_render_vao = None
@@ -875,6 +973,8 @@ class _Chunk:
             else mesh.triangle_to_element.astype(np.uint32, copy=False)
         )
         triangle_map, triangle_width = _packed_texture(ctx, mapping, "u4")
+        line_mapping = np.zeros(0 if mesh.lines is None else len(mesh.lines),dtype=np.uint32) if mesh.line_to_element is None else mesh.line_to_element
+        line_element_map,_ = _packed_texture(ctx,line_mapping,"u4")
         active_values = (
             np.ones(mesh.element_count, dtype=np.uint32)
             if mesh.active_elements is None
@@ -925,6 +1025,11 @@ class _Chunk:
             palette[index] = _rgb(_interpolate_thickness_color(value, 0.0, 1.0))
         colormap = ctx.texture((256, 1), 3, palette.tobytes(), dtype="f4")
         colormap.filter = (moderngl.LINEAR, moderngl.LINEAR)
+        # A scalar palette is a bounded scale, not a repeating surface texture.
+        # Linear filtering at 0/1 otherwise blends opposite endpoint texels and
+        # gives the minimum and maximum the same colour.
+        colormap.repeat_x = False
+        colormap.repeat_y = False
         resolved_face_colors: list[str] = []
         if face_colors:
             if len(face_colors) == mesh.triangle_count:
@@ -980,6 +1085,10 @@ class _Chunk:
                     minlength=mesh.node_count,
                 ).max() > 1
             ),
+            line_endpoint_buffer,
+            line_element_map,
+            node_scalar_texture,
+            node_scalar_width,
         )
 
     @staticmethod
@@ -1010,6 +1119,9 @@ class _Chunk:
             self.line_render_vao,
             self.line_pick_vao,
             self.line_buffer,
+            self.line_endpoint_buffer,
+            self.line_element_map,
+            self.node_scalar_texture,
             self.point_render_vao,
             self.point_pick_vao,
             self.point_index_buffer,
@@ -1058,10 +1170,30 @@ class _Chunk:
                     set_uniform(program, name, value)
 
     def bind_line_semantics(self, program: Any, set_uniform: Any = None) -> None:
+        self.active.use(location=1)
+        self.selected.use(location=2)
+        self.scalars.use(location=3)
+        self.colormap.use(location=4)
+        self.semantic_elements.use(location=7)
+        self.line_element_map.use(location=8)
+        if self.node_scalar_texture is not None:self.node_scalar_texture.use(location=9)
         self.semantic_lines.use(location=6)
         for name, value in (
             ("u_semantic_lines", 6),
             ("u_line_width", self.line_semantic_width),
+            ("u_line_to_element",8),
+            ("u_active_elements",1),
+            ("u_selected_elements",2),
+            ("u_element_scalars",3),
+            ("u_colormap",4),
+            ("u_semantic_elements",7),
+            ("u_element_width",self.element_width),
+            ("u_has_line_mapping",self.mesh.line_to_element is not None),
+            ("u_node_values",9),
+            ("u_node_width",self.node_scalar_width),
+            ("u_has_scalars",self.has_scalars),
+            ("u_node_scalars",self.node_scalars),
+            ("u_scalar_range",self.scalar_range),
         ):
             if _has_uniform(program, name):
                 if set_uniform is None:
@@ -1106,6 +1238,7 @@ class _Group:
     back_color: str
     invalid_color: str
     scalar_range: Optional[tuple[float, float]]
+    colormap: object
     highlighted_elements: np.ndarray
     preselected_elements: np.ndarray
     hidden_elements: np.ndarray
@@ -1119,6 +1252,8 @@ class _Group:
     chunk_semantic_masks: dict[object, dict[str, np.ndarray]]
     generations: DirtyGenerations
     chunks: list[tuple[object, _Chunk]]
+    palette_dirty: bool = False
+    visible: bool = True
 
 
 @dataclass(slots=True)
@@ -1200,6 +1335,10 @@ class ModernGLRenderer:
         self.frame_count = 0
         self.geometry_uploads = 0
         self.semantic_buffer_updates = 0
+        self.scalar_buffer_updates = 0
+        self.palette_updates = 0
+        self.appearance_updates = 0
+        self.palette_write_failures = 0
 
     def _set_uniform_value(self, program: Any, name: str, value: object) -> None:
         """Avoid repeating unchanged scalar/vector uniform calls each frame."""
@@ -1235,33 +1374,11 @@ class ModernGLRenderer:
         back_color: str = "",
         invalid_color: str = "#808080",
         scalar_range: Optional[tuple[float, float]] = None,
+        colormap: object = None,
     ) -> None:
-        self.remove_mesh(handle)
-        chunks = [
-            (
-                chunk_id,
-                _Chunk.create(
-                    self.ctx,
-                    mesh,
-                    handle,
-                    self.render_program,
-                    self.pick_program,
-                    self.line_program,
-                    self.line_pick_program,
-                    self.point_program,
-                    self.point_pick_program,
-                    color,
-                    tuple(str(value) for value in face_colors)
-                    if face_colors is not None and chunk_id is None else None,
-                ),
-            )
-            for chunk_id, mesh in [(None, handle.mesh), *handle.chunks]
-        ]
-        self._groups[id(handle)] = _Group(
-            handle,
-            color,
-            line_color,
-            point_color,
+        appearance=validated_appearance(scalar_range,colormap)
+        # Reject invalid scalar options before replacing published resources.
+        group_style = (
             str(point_outline),
             max(0.5, float(line_width)),
             max(1.0, float(point_size)),
@@ -1276,37 +1393,84 @@ class ModernGLRenderer:
             bool(depth_only),
             int(layer),
             bool(mesh_lines),
-            None if face_colors is None else tuple(str(value) for value in face_colors),
-            str(back_color),
-            str(invalid_color),
-            None if scalar_range is None else (float(scalar_range[0]), float(scalar_range[1])),
-            np.empty(0, dtype=np.uint32),
-            np.empty(0, dtype=np.uint32),
-            np.empty(0, dtype=np.uint32),
-            np.empty(0, dtype=np.uint32),
-            np.empty(0, dtype=np.uint32),
-            np.empty(0, dtype=np.uint32),
-            np.empty(0, dtype=np.uint32),
-            np.empty(0, dtype=np.uint32),
-            np.empty(0, dtype=np.uint32),
-            set(),
-            {},
-            handle.generations,
-            chunks,
         )
-        # Primary semantic/application element indices do not name unrelated
-        # incremental chunks until a chunk-local ownership contract exists.
-        self._write_selection(self._groups[id(handle)])
+        back_color = str(back_color)
+        invalid_color = str(invalid_color)
+        self.remove_mesh(handle)
+        chunks = []
+        try:
+            for chunk_id, mesh in [(None, handle.mesh), *handle.chunks]:
+                chunk = _Chunk.create(
+                    self.ctx, mesh, handle, self.render_program, self.pick_program,
+                    self.line_program, self.line_pick_program, self.point_program,
+                    self.point_pick_program, color,
+                    tuple(str(value) for value in face_colors)
+                    if face_colors is not None and chunk_id is None else None,
+                )
+                chunks.append((chunk_id, chunk))
+        except BaseException:
+            for _chunk_id, chunk in chunks:
+                try:chunk.release()
+                except BaseException:pass
+            raise
+        try:
+            self._groups[id(handle)] = _Group(
+                handle,
+                color,
+                line_color,
+                point_color,
+                *group_style,
+                None if face_colors is None else tuple(str(value) for value in face_colors),
+                back_color,
+                invalid_color,
+                appearance.scalar_range,
+                appearance.colormap,
+                np.empty(0, dtype=np.uint32),
+                np.empty(0, dtype=np.uint32),
+                np.empty(0, dtype=np.uint32),
+                np.empty(0, dtype=np.uint32),
+                np.empty(0, dtype=np.uint32),
+                np.empty(0, dtype=np.uint32),
+                np.empty(0, dtype=np.uint32),
+                np.empty(0, dtype=np.uint32),
+                np.empty(0, dtype=np.uint32),
+                set(),
+                {},
+                handle.generations,
+                chunks,
+            )
+            self._groups[id(handle)].visible = bool(handle.visible)
+        except BaseException:
+            self._groups.pop(id(handle),None)
+            for _chunk_id,chunk in chunks:
+                try:chunk.release()
+                except BaseException:pass
+            raise
+        self.pick_dirty = True
+        try:
+            if appearance.colormap is not None:
+                data=palette_data(appearance.colormap)
+                for _chunk_id,chunk in chunks:chunk.colormap.write(data);self.palette_updates+=1
+            # Primary indices do not name unrelated incremental chunks.
+            self._write_selection(self._groups[id(handle)])
+        except BaseException:
+            try:self.remove_mesh(handle)
+            except BaseException:pass  # retain the primary initialization error
+            raise
         self.geometry_uploads += len(chunks)
         self.pick_dirty = True
 
     def remove_mesh(self, handle: MeshHandle) -> None:
         group = self._groups.pop(id(handle), None)
         if group is not None:
+            self.pick_dirty = True
+            first_error = None
             for _chunk_id, chunk in group.chunks:
                 self._world_bounds_cache.pop(id(chunk), None)
-                chunk.release()
-            self.pick_dirty = True
+                try:chunk.release()
+                except BaseException as error:
+                    if first_error is None:first_error=error
+            if first_error is not None:raise first_error
 
     @staticmethod
     def _write_selection(group: _Group) -> None:
@@ -1645,6 +1809,12 @@ class ModernGLRenderer:
     def _sync(self, group: _Group) -> None:
         current = group.handle.generations
         previous = group.generations
+        if bool(group.handle.visible) != group.visible or any(
+                getattr(current,name) != getattr(previous,name)
+                for name in current.__dataclass_fields__ if name not in {"scalar","appearance"}):
+            # Fallible scalar/palette writes must not leave a previously clean
+            # ID target representing stale visibility, deformation or topology.
+            self.pick_dirty = True
         if current.topology != previous.topology or current.position != previous.position:
             semantic_masks = {
                 "selected_elements": group.highlighted_elements.copy(),
@@ -1664,52 +1834,69 @@ class ModernGLRenderer:
                 for chunk_id, state in group.chunk_semantic_masks.items()
             }
             chunk_pickable = set(group.chunk_pickable)
-            self.add_mesh(
-                group.handle,
-                group.color,
-                line_color=group.line_color,
-                point_color=group.point_color,
-                point_outline=group.point_outline,
-                line_width=group.line_width,
-                point_size=group.point_size,
-                opacity=group.opacity,
-                cull_backface=group.cull_backface,
-                line_overlay=group.line_overlay,
-                point_overlay=group.point_overlay,
-                lit=group.lit,
-                stipple=group.stipple,
-                stipple_phase=group.stipple_phase,
-                pickable=group.pickable,
-                depth_only=group.depth_only,
-                layer=group.layer,
-                mesh_lines=group.mesh_lines,
-                face_colors=group.face_colors,
-                back_color=group.back_color,
-                invalid_color=group.invalid_color,
-                scalar_range=group.scalar_range,
-            )
-            self.set_semantic_masks(group.handle, **semantic_masks)
-            current_chunk_ids = {
-                chunk_id for chunk_id, *_rest in group.handle.chunk_records
-            }
-            for chunk_id in chunk_pickable & current_chunk_ids:
-                self.set_chunk_pickable(group.handle, chunk_id)
-            for chunk_id, state in chunk_semantic_masks.items():
-                if chunk_id not in current_chunk_ids:
-                    continue
-                self.set_chunk_semantic_masks(
+            if current.selection != previous.selection:
+                owned_chunk_ids={chunk_id for chunk_id,_mesh,owners,_resolver in group.handle.chunk_records if owners is not None}
+                chunk_semantic_masks={chunk_id:state for chunk_id,state in chunk_semantic_masks.items() if chunk_id in owned_chunk_ids}
+            # Detach, but retain the complete previous group until both the
+            # replacement and its semantic state have been built successfully.
+            self._groups.pop(id(group.handle), None)
+            try:
+                self.add_mesh(
                     group.handle,
-                    chunk_id,
-                    selected_elements=state["highlighted_elements"],
-                    preselected_elements=state["preselected_elements"],
-                    hidden_elements=state["hidden_elements"],
-                    selected_lines=state["highlighted_lines"],
-                    preselected_lines=state["preselected_lines"],
-                    hidden_lines=state["hidden_lines"],
-                    selected_points=state["highlighted_points"],
-                    preselected_points=state["preselected_points"],
-                    hidden_points=state["hidden_points"],
+                    group.color,
+                    line_color=group.line_color,
+                    point_color=group.point_color,
+                    point_outline=group.point_outline,
+                    line_width=group.line_width,
+                    point_size=group.point_size,
+                    opacity=group.opacity,
+                    cull_backface=group.cull_backface,
+                    line_overlay=group.line_overlay,
+                    point_overlay=group.point_overlay,
+                    lit=group.lit,
+                    stipple=group.stipple,
+                    stipple_phase=group.stipple_phase,
+                    pickable=group.pickable,
+                    depth_only=group.depth_only,
+                    layer=group.layer,
+                    mesh_lines=group.mesh_lines,
+                    face_colors=group.face_colors,
+                    back_color=group.back_color,
+                    invalid_color=group.invalid_color,
+                    scalar_range=group.handle.appearance.scalar_range,
+                    colormap=group.handle.appearance.colormap,
                 )
+                self.set_semantic_masks(group.handle, **semantic_masks)
+                current_chunk_ids = {
+                    chunk_id for chunk_id, *_rest in group.handle.chunk_records
+                }
+                for chunk_id in chunk_pickable & current_chunk_ids:
+                    self.set_chunk_pickable(group.handle, chunk_id)
+                for chunk_id, state in chunk_semantic_masks.items():
+                    if chunk_id not in current_chunk_ids:
+                        continue
+                    self.set_chunk_semantic_masks(
+                        group.handle,
+                        chunk_id,
+                        selected_elements=state["highlighted_elements"],
+                        preselected_elements=state["preselected_elements"],
+                        hidden_elements=state["hidden_elements"],
+                        selected_lines=state["highlighted_lines"],
+                        preselected_lines=state["preselected_lines"],
+                        hidden_lines=state["hidden_lines"],
+                        selected_points=state["highlighted_points"],
+                        preselected_points=state["preselected_points"],
+                        hidden_points=state["hidden_points"],
+                    )
+            except BaseException:
+                try:self.remove_mesh(group.handle)
+                except BaseException:pass  # keep the primary rebuild error
+                self._groups[id(group.handle)] = group
+                self.pick_dirty = True
+                raise
+            for _chunk_id, old_chunk in group.chunks:
+                self._world_bounds_cache.pop(id(old_chunk), None)
+                old_chunk.release()
             return
         sources = {chunk_id: mesh for chunk_id, mesh in [(None, group.handle.mesh), *group.handle.chunks]}
         if current.displacement != previous.displacement:
@@ -1779,6 +1966,13 @@ class ModernGLRenderer:
                 chunk.node_scalar_buffer.write(
                     np.ascontiguousarray(node_values).tobytes()
                 )
+                self.scalar_buffer_updates += 2
+                if chunk.node_scalar_texture is not None:
+                    size = chunk.node_scalar_width*max(1,math.ceil(len(node_values)/chunk.node_scalar_width))
+                    padded_nodes = np.zeros(size,dtype=np.float32)
+                    padded_nodes[:len(node_values)] = node_values
+                    chunk.node_scalar_texture.write(padded_nodes.tobytes())
+                    self.scalar_buffer_updates += 1
                 range_values = values if mesh.element_scalars is not None else node_values
                 finite = range_values[np.isfinite(range_values)]
                 chunk.scalar_range = (
@@ -1790,10 +1984,33 @@ class ModernGLRenderer:
                 chunk.node_scalars = (
                     mesh.element_scalars is None and mesh.node_scalars is not None
                 )
+        if current.appearance != previous.appearance or group.palette_dirty:
+            appearance=group.handle.appearance
+            if appearance.colormap!=group.colormap or group.palette_dirty:
+                data=palette_data(appearance.colormap)
+                rollback=palette_data(group.colormap)
+                try:
+                    for _chunk_id,chunk in group.chunks:
+                        chunk.colormap.write(data);self.palette_updates+=1
+                except BaseException:
+                    # A failed write may already have changed any texture.
+                    # Restore best-effort now and force a complete next sync;
+                    # preserve the primary GPU error if restoration also fails.
+                    group.palette_dirty=True;self.palette_write_failures+=1
+                    for _chunk_id,chunk in group.chunks:
+                        try:chunk.colormap.write(rollback);self.palette_updates+=1
+                        except BaseException:pass
+                    raise
+                group.palette_dirty=False
+            group.scalar_range=appearance.scalar_range;group.colormap=appearance.colormap
+            self.appearance_updates+=1
         for chunk_id, chunk in group.chunks:
             chunk.mesh = sources[chunk_id]
         group.generations = current
-        self.pick_dirty = True
+        visible = bool(group.handle.visible)
+        if visible != group.visible or any(getattr(current,name)!=getattr(previous,name) for name in current.__dataclass_fields__ if name not in {"scalar","appearance"}):
+            self.pick_dirty = True
+        group.visible = visible
 
     @staticmethod
     def _camera_frame(
@@ -2162,7 +2379,10 @@ class ModernGLRenderer:
             ctx.disable(moderngl.DEPTH_TEST)
         self._uniforms(program, chunk, frame)
         chunk.bind_line_semantics(program, self._set_uniform_value)
+        if "u_scalar_range" in program:self._set_uniform_value(program,"u_scalar_range",group.scalar_range or chunk.scalar_range)
         self._set_uniform_value(program, "u_color", _rgb(group.line_color))
+        self._set_uniform_value(program,"u_invalid_color",_rgb(group.invalid_color))
+        self._set_uniform_value(program,"u_selection_color",_rgb(selection_color))
         self._set_uniform_value(program, "u_highlight_color", _rgb(selection_color))
         self._set_uniform_value(
             program, "u_preselection_color", _rgb(preselection_color)
@@ -2712,15 +2932,20 @@ class ModernGLRenderer:
     def _ensure_pick_target(self, viewport: tuple[int, int]) -> None:
         if viewport == self._pick_size:
             return
-        for resource in (self._pick_fbo, self._pick_texture, self._pick_depth):
-            if resource is not None:
-                resource.release()
-        self._pick_texture = self.ctx.texture(viewport, 1, dtype="u4")
-        self._pick_depth = self.ctx.depth_renderbuffer(viewport)
-        self._pick_fbo = self.ctx.framebuffer(
-            color_attachments=[self._pick_texture], depth_attachment=self._pick_depth
-        )
+        self.pick_dirty = True
+        stage=_ResourceStage(self.ctx)
+        try:
+            texture=stage.texture(viewport,1,dtype="u4")
+            depth=stage.depth_renderbuffer(viewport)
+            framebuffer=stage.framebuffer(color_attachments=[texture],depth_attachment=depth)
+        except BaseException:
+            stage.release()
+            raise
+        previous=(self._pick_fbo,self._pick_texture,self._pick_depth)
+        self._pick_texture,self._pick_depth,self._pick_fbo=texture,depth,framebuffer
         self._pick_size = viewport
+        for resource in previous:
+            if resource is not None:resource.release()
         self.pick_dirty = True
 
     def render_pick(
@@ -2732,6 +2957,9 @@ class ModernGLRenderer:
         occlude_lines: bool = True,
         primitive_kinds: Optional[Sequence[str]] = None,
     ) -> None:
+        # Resize, clear, sync and draw are fallible. Only a complete pass below
+        # may mark the target clean, including an explicitly requested redraw.
+        self.pick_dirty = True
         included_kinds = (
             _ALL_PICK_KINDS
             if primitive_kinds is None

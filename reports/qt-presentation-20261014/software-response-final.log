@@ -1,0 +1,7 @@
+Failed to find real location of C:\Python\Python314\python.exe
+.....................                                                    [100%]
+21 passed in 0.28s
+Exception ignored while calling deallocator <function Console.__del__ at 0x0000024E0D73E8D0>:
+Traceback (most recent call last):
+  File "C:\Python\Python314\Lib\site-packages\pyreadline3\console\console.py", line 254, in __del__
+OSError: [WinError -1073741816] Windows Error 0xc0000008

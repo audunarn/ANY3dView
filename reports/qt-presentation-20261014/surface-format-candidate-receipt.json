@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:\\Python\\Python314\\python.exe",
+    "-m",
+    "pytest",
+    "tests/test_qt_surface_format.py",
+    "tests/test_qt_deferred_failure.py",
+    "-q",
+    "-p",
+    "no:cacheprovider"
+  ],
+  "status": 0,
+  "process_wall_s": 2.083843100001104,
+  "category": "fake/unit; no QApplication or window"
+}

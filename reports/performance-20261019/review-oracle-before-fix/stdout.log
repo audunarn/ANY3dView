@@ -1,0 +1,60 @@
+FFF                                                                      [100%]
+================================== FAILURES ===================================
+_______ test_animation_changed_chunk_data_reaches_actual_display_handle _______
+
+    def test_animation_changed_chunk_data_reaches_actual_display_handle():
+        view=Scene(); handle=view.add_mesh_arrays(mesh())
+        handle.add_chunk('part',mesh())
+>       view.begin_animation_cache(); view.capture_animation_frame()
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_performance_review_oracle.py:30: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <test_performance_review_oracle.Scene object at 0x00000267B7A48980>
+
+    def begin_animation_cache(self) -> None:
+>       self.stop_animation()
+        ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'Scene' object has no attribute 'stop_animation'. Did you mean: 'play_animation'?
+
+src\any3dview\retained_viewer.py:3132: AttributeError
+_________ test_animation_changed_normals_reach_actual_display_handle __________
+
+    def test_animation_changed_normals_reach_actual_display_handle():
+        view=Scene(); view.add_mesh_arrays(mesh())
+>       view.begin_animation_cache(); view.capture_animation_frame()
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_performance_review_oracle.py:44: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <test_performance_review_oracle.Scene object at 0x00000267B7B0BC50>
+
+    def begin_animation_cache(self) -> None:
+>       self.stop_animation()
+        ^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'Scene' object has no attribute 'stop_animation'. Did you mean: 'play_animation'?
+
+src\any3dview\retained_viewer.py:3132: AttributeError
+_____ test_scheduler_error_remains_fail_fast_and_pending_work_can_resume ______
+
+    def test_scheduler_error_remains_fail_fast_and_pending_work_can_resume():
+        scheduler=ViewerScheduler(); seen=[]; wakes=[]
+        scheduler.set_notifier(lambda:wakes.append(1))
+        def fail(): raise ValueError('original failure')
+        scheduler.submit(fail); scheduler.submit(seen.append,'later')
+        with pytest.raises(ValueError,match='original failure'): scheduler.drain()
+>       assert seen==[], 'Later callbacks must not execute before the failure is observed'
+E       AssertionError: Later callbacks must not execute before the failure is observed
+E       assert ['later'] == []
+E         
+E         Left contains one more item: 'later'
+E         Use -v to get more diff
+
+tests\test_performance_review_oracle.py:57: AssertionError
+=========================== short test summary info ===========================
+FAILED tests/test_performance_review_oracle.py::test_animation_changed_chunk_data_reaches_actual_display_handle
+FAILED tests/test_performance_review_oracle.py::test_animation_changed_normals_reach_actual_display_handle
+FAILED tests/test_performance_review_oracle.py::test_scheduler_error_remains_fail_fast_and_pending_work_can_resume
+3 failed in 2.25s

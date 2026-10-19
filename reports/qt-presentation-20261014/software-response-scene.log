@@ -1,0 +1,142 @@
+Failed to find real location of C:\Python\Python314\python.exe
+...........F.........                                                    [100%]
+================================== FAILURES ===================================
+_ test_actual_software_scene_highlight_visibility_and_section_match_uncached __
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000024ADE675040>
+
+    def test_actual_software_scene_highlight_visibility_and_section_match_uncached(monkeypatch):
+        import numpy as np
+        from any3dview import MeshArrays
+        from any3dview.retained_viewer import RetainedViewer
+        v=RetainedViewer();v.initialize_state(width=120,height=90)
+        v._software_revision=0;v._renderer=qt._SoftwareResources();v._hud=qt._PainterHud()
+        v._render_hud=lambda size:None  # Scene renderer comparison; no font engine/window.
+        surface=SimpleNamespace(owner=v,_cached_image=None,_cached_key=None,
+            width=lambda:120,height=lambda:90,devicePixelRatioF=lambda:1.,update=lambda:None)
+        v.surface=surface
+        v._host=SimpleNamespace(framebuffer_size=lambda:(120,90),request_redraw=lambda:qt.QtViewer.request_redraw(v))
+        v._paint_software=lambda painter:qt.QtViewer._paint_software(v,painter)
+        mesh=MeshArrays(np.array([[0.,0.,0.],[1.,0.,0.],[1.,1.,0.],[0.,1.,0.]]),np.array([[0,1,2],[0,2,3]],dtype=np.uint32))
+>       handle=v.add_mesh_arrays(mesh,tags='face',color='#123456',cull_backface=False)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests\test_qt_software_responsiveness.py:97: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\any3dview\retained_viewer.py:2002: in add_mesh_arrays
+    return self._add_mesh_arrays(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <any3dview.retained_viewer.RetainedViewer object at 0x0000024ADE1EC6E0>
+mesh = MeshArrays(positions=array([[0., 0., 0.],
+       [1., 0., 0.],
+       [1., 1., 0.],
+       [0., 1., 0.]]), triangles=a... displacements=None, node_scalars=None, element_scalars=None, active_elements=None, normals=None, line_to_element=None)
+color = '#123456', outline = '', width = 1, layer = 5, cull_backface = False
+opacity = 1.0, stipple = '', back_color = ''
+
+    def _add_mesh_arrays(
+        self,
+        mesh: MeshArrays,
+        *,
+        color: str = "#9aa7b4",
+        outline: str = "",
+        width: int = 1,
+        layer: int = 5,
+        cull_backface: bool = True,
+        opacity: float = 1.0,
+        stipple: str = "",
+        back_color: str = "",
+        tags: str = "",
+        lit: bool = True,
+        two_sided_shell: bool = False,
+        face_colors: Optional[Sequence[str]] = None,
+        scalar_range: Optional[tuple[float, float]] = None,
+        colormap: object = None,
+        invalid_color: str = "#808080",
+        point_color: str = "#2563eb",
+        point_outline: str = "",
+        point_size: int = 6,
+        owners: Optional[PackedOwnerTable] = None,
+        owner_resolver: Optional[Callable[..., object]] = None,
+        line_color: Optional[str] = None,
+        line_width: Optional[int] = None,
+        draw_overlay: bool = False,
+        pickable: bool = True,
+        depth_only: bool = False,
+        **_appearance: object,
+    ) -> MeshHandle:
+        if not isinstance(mesh, MeshArrays):
+            raise TypeError("mesh must be MeshArrays")
+        if owners is not None and not isinstance(owners, PackedOwnerTable):
+            raise TypeError("owners must be a PackedOwnerTable")
+        if owners is not None:
+            mapped = len(owners.triangle_offsets) - 1
+            if mapped not in (0, mesh.triangle_count):
+                raise ValueError("triangle owner mappings must match triangle count")
+        if face_colors is not None and len(face_colors) not in (
+            0, mesh.triangle_count, mesh.element_count
+        ):
+            raise ValueError("face_colors must match triangle or element count")
+        handle = MeshHandle(mesh,on_change=self._mesh_changed,validate_mesh=self._validate_mesh_support,scalar_range=scalar_range,colormap=colormap)
+        effective_line_color = str(line_color or outline or "#334155")
+        effective_line_width = float(width if line_width is None else line_width)
+        appearance = {
+            "color": str(color),
+            "line_color": effective_line_color,
+            "point_color": str(point_color),
+            "line_width": effective_line_width,
+            "point_size": float(point_size),
+            "opacity": float(opacity),
+            "cull_backface": bool(cull_backface and not two_sided_shell and not back_color),
+            "line_overlay": bool(draw_overlay),
+            "point_overlay": bool(_appearance.get("_point_overlay", False)),
+            "lit": bool(lit),
+            "stipple": str(stipple),
+            "stipple_phase": int(_appearance.get("stipple_phase", 0)),
+            "pickable": bool(pickable),
+            "depth_only": bool(depth_only),
+            "layer": int(layer),
+            "mesh_lines": bool(_appearance.get("_mesh_outline", False)),
+            "face_colors": None if face_colors is None else tuple(str(v) for v in face_colors),
+            "scalar_range": handle.appearance.scalar_range,
+            "colormap": handle.appearance.colormap,
+            "back_color": str(back_color),
+            "invalid_color": str(invalid_color),
+            "point_outline": str(point_outline),
+        }
+        self._legacy_item_counter += 1
+        self._entries[id(handle)] = {
+            "handle": handle,
+            "owners": owners,
+            "owner_resolver": owner_resolver,
+            "appearance": appearance,
+            "layer": int(layer),
+            "tags": frozenset(str(tags).split()),
+            "item": self._legacy_item_counter,
+            "face_colors": None if face_colors is None else tuple(face_colors),
+            # Filled lazily from integer-pick hits or one vectorized lookup per
+            # application-requested key; never construct an O(n^2) inverse.
+            "semantic_elements": {},
+            "hit_elements": {},
+            "semantic_lines": {},
+            "hit_lines": {},
+            "semantic_points": {},
+            "hit_points": {},
+            "chunk_semantics": {},
+            "outline_groups": _appearance.get("_outline_groups"),
+            "outline_topology": mesh.triangles,
+        }
+        try:
+>           self._host.make_current()
+            ^^^^^^^^^^^^^^^^^^^^^^^
+E           AttributeError: 'types.SimpleNamespace' object has no attribute 'make_current'
+
+src\any3dview\retained_viewer.py:2126: AttributeError
+=========================== short test summary info ===========================
+FAILED tests/test_qt_software_responsiveness.py::test_actual_software_scene_highlight_visibility_and_section_match_uncached
+1 failed, 20 passed in 2.41s
+Exception ignored while calling deallocator <function Console.__del__ at 0x0000024ADDF8E8D0>:
+Traceback (most recent call last):
+  File "C:\Python\Python314\Lib\site-packages\pyreadline3\console\console.py", line 254, in __del__
+OSError: [WinError -1073741816] Windows Error 0xc0000008

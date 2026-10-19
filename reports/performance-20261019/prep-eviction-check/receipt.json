@@ -1,0 +1,15 @@
+{
+  "command": [
+    "C:/Python/Python314/python.exe",
+    "-m",
+    "pytest",
+    "tests/test_performance_review_oracle.py::test_software_preparation_reuses_camera_changes_invalidates_and_evicts",
+    "-q",
+    "-p",
+    "no:cacheprovider"
+  ],
+  "timeout_s": 120.0,
+  "exit_code": 0,
+  "timed_out": false,
+  "process_wall_s": 2.2264130999683402
+}

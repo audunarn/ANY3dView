@@ -1,0 +1,51 @@
+Failed to find real location of C:\Python\Python314\python.exe
+...........F.........                                                    [100%]
+================================== FAILURES ===================================
+_ test_actual_software_scene_highlight_visibility_and_section_match_uncached __
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x00000174919E5040>
+
+    def test_actual_software_scene_highlight_visibility_and_section_match_uncached(monkeypatch):
+        import numpy as np
+        from any3dview import MeshArrays
+        from any3dview.retained_viewer import RetainedViewer
+        v=RetainedViewer();v.initialize_state(width=120,height=90)
+        v._software_revision=0;v._renderer=qt._SoftwareResources();v._hud=qt._PainterHud()
+        v._render_hud=lambda size:None  # Scene renderer comparison; no font engine/window.
+        surface=SimpleNamespace(owner=v,_cached_image=None,_cached_key=None,
+            width=lambda:120,height=lambda:90,devicePixelRatioF=lambda:1.,update=lambda:None)
+        v.surface=surface
+        v._host=SimpleNamespace(make_current=lambda:None,framebuffer_size=lambda:(120,90),request_redraw=lambda:qt.QtViewer.request_redraw(v))
+        v._paint_software=lambda painter:qt.QtViewer._paint_software(v,painter)
+        mesh=MeshArrays(np.array([[0.,0.,0.],[1.,0.,0.],[1.,1.,0.],[0.,1.,0.]]),np.array([[0,1,2],[0,2,3]],dtype=np.uint32))
+        handle=v.add_mesh_arrays(mesh,tags='face',color='#123456',cull_backface=False)
+        destination=QImage(120,90,QImage.Format_RGBA8888)
+        monkeypatch.setattr(qt,'QPainter',lambda target:QPainter(destination if target is surface else target))
+        for change in (lambda:None,lambda:v.set_highlight(['face']),lambda:v.set_section_plane((1,0,0),.5),lambda:handle.set_visible(False)):
+            change()
+            expected=QImage(120,90,QImage.Format_RGBA8888)
+>           v._paint_software(QPainter(expected))
+
+tests\test_qt_software_responsiveness.py:103: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\test_qt_software_responsiveness.py:95: in <lambda>
+    v._paint_software=lambda painter:qt.QtViewer._paint_software(v,painter)
+                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <any3dview.retained_viewer.RetainedViewer object at 0x00000174915CC6E0>
+painter = <PySide6.QtGui.QPainter object at 0x0000017491AA6240>
+
+    def _paint_software(self, painter):
+>       painter.setRenderHint(QPainter.Antialiasing)
+                              ^^^^^^^^^^^^^^^^^^^^^
+E       AttributeError: 'function' object has no attribute 'Antialiasing'
+
+src\any3dview\qt.py:558: AttributeError
+=========================== short test summary info ===========================
+FAILED tests/test_qt_software_responsiveness.py::test_actual_software_scene_highlight_visibility_and_section_match_uncached
+1 failed, 20 passed in 2.47s
+Exception ignored while calling deallocator <function Console.__del__ at 0x00000174912FE8D0>:
+Traceback (most recent call last):
+  File "C:\Python\Python314\Lib\site-packages\pyreadline3\console\console.py", line 254, in __del__
+OSError: [WinError -1073741816] Windows Error 0xc0000008

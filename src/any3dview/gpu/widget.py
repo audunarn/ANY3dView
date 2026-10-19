@@ -9,6 +9,7 @@ import time
 import tkinter as tk
 from tkinter import ttk
 from dataclasses import replace
+from threading import get_ident
 from typing import Any, Callable, Iterable, Optional, Sequence
 
 import numpy as np
@@ -23,7 +24,7 @@ except ImportError as error:  # pragma: no cover - isolated-wheel coverage
 from ..arrays import MeshArrays
 from ..capabilities import ViewerCapabilities
 from ..clipping import SectionPlane
-from ..contracts import Pick, ViewerState
+from ..contracts import Pick, PresentedFrame, ViewerState
 from ..core import (
     Camera3D,
     Point3D,
@@ -115,6 +116,9 @@ class Any3DView(RetainedViewer, ttk.Frame):
         **canvas_kwargs: Any,
     ) -> None:
         super().__init__(master, **canvas_kwargs)
+        self._presentation_owner = get_ident()
+        self._presented_frame_sequence = 0
+        self._frame_presented_listeners: list[Callable[[PresentedFrame], None]] = []
         self.camera = Camera3D()
         self.width = max(1, int(width))
         self.height = max(1, int(height))
@@ -339,9 +343,45 @@ class Any3DView(RetainedViewer, ttk.Frame):
         except Exception:
             return 1.0
 
+    @property
+    def presented_frame_sequence(self) -> int:
+        """Number of completed host buffer swaps for this widget."""
+        return self._presented_frame_sequence
+
+    def add_frame_presented_listener(
+        self, callback: Callable[[PresentedFrame], None]
+    ) -> Callable[[], None]:
+        """Listen after successful swaps; registration/removal owns the UI thread.
+
+        The returned callable removes this subscription. Listener failures are
+        reported through Tk's callback error handler without suppressing others.
+        """
+        self._assert_presentation_owner()
+        if self._closed:
+            raise RuntimeError("viewer has been closed")
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        # A wrapper gives duplicate callback registrations independent lifetimes.
+        def listener(frame: PresentedFrame) -> None:
+            callback(frame)
+
+        self._frame_presented_listeners.append(listener)
+
+        def unsubscribe() -> None:
+            self._assert_presentation_owner()
+            if listener in self._frame_presented_listeners:
+                self._frame_presented_listeners.remove(listener)
+
+        return unsubscribe
+
+    def _assert_presentation_owner(self) -> None:
+        if get_ident() != self._presentation_owner:
+            raise RuntimeError("frame presentation must run on the viewer owner thread")
+
     def _draw_now(self) -> None:
         if self._closed:
             return
+        self._assert_presentation_owner()
         self._host.make_current()
         self._sync_pixel_ratio()
         size = self._host.framebuffer_size()
@@ -363,12 +403,24 @@ class Any3DView(RetainedViewer, ttk.Frame):
         self._render_hud(size)
         self._host.swap_buffers()
         self.width, self.height = size
+        self._presented_frame_sequence += 1
+        frame = PresentedFrame(self._presented_frame_sequence, time.perf_counter_ns())
+        for listener in tuple(self._frame_presented_listeners):
+            if self._closed:
+                break
+            if listener not in self._frame_presented_listeners:
+                continue
+            try:
+                listener(frame)
+            except Exception:
+                self._root().report_callback_exception(*sys.exc_info())
 
 
     def destroy(self) -> None:
         if getattr(self, "_closed", True):
             return
         self._closed = True
+        self._frame_presented_listeners.clear()
         self.stop_animation()
         if self._wheel_finish_after_id is not None:
             try:

@@ -1,0 +1,38 @@
+         2067039 function calls (2051199 primitive calls) in 1.236 seconds
+
+   Ordered by: cumulative time
+   List reduced from 146 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        3    0.000    0.000    1.236    0.412 C:\Github\ANY3dView\tools\bench_barge_review.py:70(orbit)
+        3    0.000    0.000    1.236    0.412 C:\Github\ANY3dView\tools\bench_barge_review.py:58(paint)
+        3    0.001    0.000    1.235    0.412 {method 'repaint' of 'PySide6.QtWidgets.QWidget' objects}
+        3    0.010    0.003    1.234    0.411 C:\Github\ANY3dView\src\any3dview\qt.py:306(paintEvent)
+        3    0.409    0.136    1.223    0.408 C:\Github\ANY3dView\src\any3dview\qt.py:1033(_paint_software)
+    32253    0.081    0.000    0.386    0.000 C:\Github\ANY3dView\src\any3dview\retained_viewer.py:3535(_surface_outline_segments)
+     8493    0.114    0.000    0.298    0.000 C:\Github\ANY3dView\src\any3dview\retained_viewer.py:85(_surface_outline_loops)
+31680/15840    0.093    0.000    0.129    0.000 C:\Python\Python314\Lib\site-packages\numpy\_core\numeric.py:1230(roll)
+    32319    0.036    0.000    0.112    0.000 C:\Github\ANY3dView\src\any3dview\retained_viewer.py:313(pixel_ratio)
+    31680    0.062    0.000    0.062    0.000 {method 'drawPolyline' of 'PySide6.QtGui.QPainter' objects}
+    71286    0.025    0.000    0.055    0.000 {built-in method builtins.sorted}
+    47520    0.029    0.000    0.047    0.000 {built-in method builtins.sum}
+    32319    0.010    0.000    0.046    0.000 <frozen _collections_abc>:792(get)
+    47526    0.026    0.000    0.038    0.000 {method 'setRenderHint' of 'PySide6.QtGui.QPainter' objects}
+    32319    0.016    0.000    0.036    0.000 <frozen os>:704(__getitem__)
+    47520    0.030    0.000    0.030    0.000 C:\Github\ANY3dView\src\any3dview\qt.py:1091(<lambda>)
+    47571    0.018    0.000    0.026    0.000 {method 'setBrush' of 'PySide6.QtGui.QPainter' objects}
+    95100    0.018    0.000    0.024    0.000 C:\Python\Python314\Lib\enum.py:186(__get__)
+    15840    0.024    0.000    0.024    0.000 {method 'drawPolygon' of 'PySide6.QtGui.QPainter' objects}
+    15840    0.013    0.000    0.021    0.000 C:\Python\Python314\Lib\site-packages\numpy\_core\numeric.py:1431(normalize_axis_tuple)
+    32319    0.009    0.000    0.021    0.000 <frozen os>:778(encodekey)
+    48192    0.016    0.000    0.020    0.000 {method 'setPen' of 'PySide6.QtGui.QPainter' objects}
+    32319    0.012    0.000    0.018    0.000 C:\Github\ANY3dView\src\any3dview\qt.py:654(_native_pixel_ratio)
+    63360    0.013    0.000    0.013    0.000 C:\Github\ANY3dView\src\any3dview\qt.py:1072(<genexpr>)
+   152835    0.012    0.000    0.012    0.000 {method 'append' of 'list' objects}
+      573    0.008    0.000    0.012    0.000 C:\Github\ANY3dView\src\any3dview\retained_viewer.py:430(_project_world_points)
+      639    0.011    0.000    0.011    0.000 {method 'drawLine' of 'PySide6.QtGui.QPainter' objects}
+    79200    0.008    0.000    0.008    0.000 {method 'setdefault' of 'dict' objects}
+    32319    0.005    0.000    0.008    0.000 <frozen os>:772(check_str)
+        3    0.002    0.001    0.007    0.002 {method 'extend' of 'list' objects}
+
+

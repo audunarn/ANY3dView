@@ -1,0 +1,134 @@
+Failed to find real location of C:\Python\Python314\python.exe
+FFFFFFF                                                                  [100%]
+================================== FAILURES ===================================
+______ test_obsolete_failure_does_not_mutate_current_surface[recovered] _______
+
+case = 'recovered'
+
+    @pytest.mark.parametrize('case',['recovered','replaced','new_error','closed','software'])
+    def test_obsolete_failure_does_not_mutate_current_surface(case):
+        old_error=RuntimeError('old context')
+        source=SimpleNamespace(error=old_error,hide=lambda:pytest.fail('hidden'))
+        current=source
+        if case=='recovered':source.error=None
+        if case=='replaced':current=SimpleNamespace(error=RuntimeError('other'))
+        if case=='new_error':source.error=RuntimeError('new context')
+        if case=='software':current=SimpleNamespace()  # no GL error attribute
+        viewer,events=owner(current,backend='software' if case=='software' else 'gpu',closed=case=='closed')
+>       QtViewer._render_failed(viewer,source,old_error)
+E       TypeError: QtViewer._render_failed() takes 1 positional argument but 3 were given
+
+tests\test_qt_deferred_failure.py:27: TypeError
+_______ test_obsolete_failure_does_not_mutate_current_surface[replaced] _______
+
+case = 'replaced'
+
+    @pytest.mark.parametrize('case',['recovered','replaced','new_error','closed','software'])
+    def test_obsolete_failure_does_not_mutate_current_surface(case):
+        old_error=RuntimeError('old context')
+        source=SimpleNamespace(error=old_error,hide=lambda:pytest.fail('hidden'))
+        current=source
+        if case=='recovered':source.error=None
+        if case=='replaced':current=SimpleNamespace(error=RuntimeError('other'))
+        if case=='new_error':source.error=RuntimeError('new context')
+        if case=='software':current=SimpleNamespace()  # no GL error attribute
+        viewer,events=owner(current,backend='software' if case=='software' else 'gpu',closed=case=='closed')
+>       QtViewer._render_failed(viewer,source,old_error)
+E       TypeError: QtViewer._render_failed() takes 1 positional argument but 3 were given
+
+tests\test_qt_deferred_failure.py:27: TypeError
+______ test_obsolete_failure_does_not_mutate_current_surface[new_error] _______
+
+case = 'new_error'
+
+    @pytest.mark.parametrize('case',['recovered','replaced','new_error','closed','software'])
+    def test_obsolete_failure_does_not_mutate_current_surface(case):
+        old_error=RuntimeError('old context')
+        source=SimpleNamespace(error=old_error,hide=lambda:pytest.fail('hidden'))
+        current=source
+        if case=='recovered':source.error=None
+        if case=='replaced':current=SimpleNamespace(error=RuntimeError('other'))
+        if case=='new_error':source.error=RuntimeError('new context')
+        if case=='software':current=SimpleNamespace()  # no GL error attribute
+        viewer,events=owner(current,backend='software' if case=='software' else 'gpu',closed=case=='closed')
+>       QtViewer._render_failed(viewer,source,old_error)
+E       TypeError: QtViewer._render_failed() takes 1 positional argument but 3 were given
+
+tests\test_qt_deferred_failure.py:27: TypeError
+________ test_obsolete_failure_does_not_mutate_current_surface[closed] ________
+
+case = 'closed'
+
+    @pytest.mark.parametrize('case',['recovered','replaced','new_error','closed','software'])
+    def test_obsolete_failure_does_not_mutate_current_surface(case):
+        old_error=RuntimeError('old context')
+        source=SimpleNamespace(error=old_error,hide=lambda:pytest.fail('hidden'))
+        current=source
+        if case=='recovered':source.error=None
+        if case=='replaced':current=SimpleNamespace(error=RuntimeError('other'))
+        if case=='new_error':source.error=RuntimeError('new context')
+        if case=='software':current=SimpleNamespace()  # no GL error attribute
+        viewer,events=owner(current,backend='software' if case=='software' else 'gpu',closed=case=='closed')
+>       QtViewer._render_failed(viewer,source,old_error)
+E       TypeError: QtViewer._render_failed() takes 1 positional argument but 3 were given
+
+tests\test_qt_deferred_failure.py:27: TypeError
+_______ test_obsolete_failure_does_not_mutate_current_surface[software] _______
+
+case = 'software'
+
+    @pytest.mark.parametrize('case',['recovered','replaced','new_error','closed','software'])
+    def test_obsolete_failure_does_not_mutate_current_surface(case):
+        old_error=RuntimeError('old context')
+        source=SimpleNamespace(error=old_error,hide=lambda:pytest.fail('hidden'))
+        current=source
+        if case=='recovered':source.error=None
+        if case=='replaced':current=SimpleNamespace(error=RuntimeError('other'))
+        if case=='new_error':source.error=RuntimeError('new context')
+        if case=='software':current=SimpleNamespace()  # no GL error attribute
+        viewer,events=owner(current,backend='software' if case=='software' else 'gpu',closed=case=='closed')
+>       QtViewer._render_failed(viewer,source,old_error)
+E       TypeError: QtViewer._render_failed() takes 1 positional argument but 3 were given
+
+tests\test_qt_deferred_failure.py:27: TypeError
+____________ test_current_failure_still_reports_releases_and_hides ____________
+
+    def test_current_failure_still_reports_releases_and_hides():
+        failure=RuntimeError('lost context'); hidden=[]
+        surface=SimpleNamespace(error=failure,hide=lambda:hidden.append(True))
+        viewer,events=owner(surface)
+>       QtViewer._render_failed(viewer,surface,failure)
+E       TypeError: QtViewer._render_failed() takes 1 positional argument but 3 were given
+
+tests\test_qt_deferred_failure.py:35: TypeError
+____________ test_direct_failure_handler_ignores_recovered_surface ____________
+
+    def test_direct_failure_handler_ignores_recovered_surface():
+        surface=SimpleNamespace(error=None,hide=lambda:pytest.fail('recovered surface hidden'))
+        viewer,events=owner(surface)
+>       QtViewer._render_failed(viewer)
+
+tests\test_qt_deferred_failure.py:44: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src\any3dview\qt.py:415: in _render_failed
+    old.hide()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+>   surface=SimpleNamespace(error=None,hide=lambda:pytest.fail('recovered surface hidden'))
+                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   Failed: recovered surface hidden
+
+tests\test_qt_deferred_failure.py:42: Failed
+=========================== short test summary info ===========================
+FAILED tests/test_qt_deferred_failure.py::test_obsolete_failure_does_not_mutate_current_surface[recovered]
+FAILED tests/test_qt_deferred_failure.py::test_obsolete_failure_does_not_mutate_current_surface[replaced]
+FAILED tests/test_qt_deferred_failure.py::test_obsolete_failure_does_not_mutate_current_surface[new_error]
+FAILED tests/test_qt_deferred_failure.py::test_obsolete_failure_does_not_mutate_current_surface[closed]
+FAILED tests/test_qt_deferred_failure.py::test_obsolete_failure_does_not_mutate_current_surface[software]
+FAILED tests/test_qt_deferred_failure.py::test_current_failure_still_reports_releases_and_hides
+FAILED tests/test_qt_deferred_failure.py::test_direct_failure_handler_ignores_recovered_surface
+7 failed in 2.55s
+Exception ignored while calling deallocator <function Console.__del__ at 0x0000025EC92EE8D0>:
+Traceback (most recent call last):
+  File "C:\Python\Python314\Lib\site-packages\pyreadline3\console\console.py", line 254, in __del__
+OSError: [WinError -1073741816] Windows Error 0xc0000008

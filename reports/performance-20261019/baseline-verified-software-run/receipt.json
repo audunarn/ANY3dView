@@ -1,0 +1,16 @@
+{
+  "command": [
+    "C:/Python/Python314/python.exe",
+    "tools/bench_barge_review.py",
+    "--source",
+    "reports/performance-20261019/baseline-src",
+    "--out",
+    "reports/performance-20261019/baseline-verified-software",
+    "--backend",
+    "software"
+  ],
+  "timeout_s": 120.0,
+  "exit_code": 0,
+  "timed_out": false,
+  "process_wall_s": 10.799859800026752
+}

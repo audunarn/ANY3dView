@@ -1,4 +1,4 @@
-"""Schema-4 ANYgeometry adapter qualification tests."""
+"""ANYgeometry adapter regressions for owner-decoded geometry documents."""
 
 from __future__ import annotations
 
@@ -14,6 +14,33 @@ pytest.importorskip("mapbox_earcut", reason="positive adapter tests require the 
 
 from any3dview import MeshHandle
 from any3dview.adapters.anygeometry import DisplayMode, DisplayPolicy, GeometryLayer
+
+
+def test_schema_five_exact_curves_use_owner_evaluation_after_round_trip():
+    from any3dview.adapters.anygeometry.tessellation import sampled_edge
+    from any3dview.adapters.anygeometry.policy import TessellationPolicy
+    model=anygeometry.GeometryModel()
+    first=anygeometry.Cylinder((0,0,-2),(0,0,1),(1,0,0),1,4)
+    second=anygeometry.Cylinder((0,-2,0),(0,1,0),(1,0,0),1,4)
+    curves=(anygeometry.EllipticArc((0,0,0),(2,0,0),(0,1,1),0.,np.pi/2),
+            anygeometry.CylinderIntersectionCurve(first,second,0.,np.pi/2,1))
+    edges=[]
+    for curve in curves:
+        start,end=model.add_points(curve.evaluate([0.,1.]))
+        edges.append(model.add_curve(start,end,curve))
+    document=anygeometry.to_dict(model)
+    assert document['version']==5
+    restored=anygeometry.from_dict(document)
+    before=anygeometry.to_dict(restored)
+    for edge,curve in zip(edges,curves):
+        values=sampled_edge(restored,edge,TessellationPolicy(),0)
+        assert values.shape[1]==3 and len(values)>2
+        assert np.isfinite(values).all()
+        np.testing.assert_allclose(values[[0,-1]],curve.evaluate([0.,1.]),atol=1e-12)
+        if isinstance(curve,anygeometry.CylinderIntersectionCurve):
+            np.testing.assert_allclose(values[:,0]**2+values[:,1]**2,1.,atol=1e-12)
+            np.testing.assert_allclose(values[:,0]**2+values[:,2]**2,1.,atol=1e-12)
+    assert anygeometry.to_dict(restored)==before
 
 
 @dataclass

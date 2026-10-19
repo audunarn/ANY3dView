@@ -1191,9 +1191,11 @@ class RetainedViewer:
             rows.extend(np.flatnonzero(mask).tolist())
         # Model/resolver identities need their public string representation;
         # resolve rows lazily only when the packed application columns did not
-        # identify the requested key.
+        # identify the requested key. Application rows have already been
+        # checked exactly by their packed columns. Reconstructing them on a
+        # miss only scans unrelated edge/point batches for a selected face.
         if not rows:
-            for row in range(table.owner_count):
+            for row in np.flatnonzero(table.domains == 0).tolist():
                 owner = table.owner(row, resolver)
                 owner_key = (
                     owner.key if isinstance(owner, PickOwner)

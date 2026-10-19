@@ -1,0 +1,38 @@
+         8388 function calls in 0.013 seconds
+
+   Ordered by: cumulative time
+   List reduced from 161 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        3    0.000    0.000    0.013    0.004 C:\Github\ANY3dView\reports\gpu-improvements-20261019\bench_final.py:71(orbit)
+        3    0.000    0.000    0.013    0.004 C:\Github\ANY3dView\reports\gpu-improvements-20261019\bench_final.py:59(paint)
+        3    0.009    0.003    0.012    0.004 {method 'grabFramebuffer' of 'PySide6.QtOpenGLWidgets.QOpenGLWidget' objects}
+        3    0.000    0.000    0.003    0.001 C:\Github\ANY3dView\src\any3dview\qt.py:452(paintGL)
+        3    0.000    0.000    0.002    0.001 C:\Github\ANY3dView\src\any3dview\gpu\renderer.py:2738(render)
+        3    0.000    0.000    0.001    0.000 C:\Python\Python314\Lib\site-packages\moderngl\__init__.py:1877(finish)
+        3    0.001    0.000    0.001    0.000 {method 'finish' of 'mgl.Context' objects}
+       12    0.000    0.000    0.001    0.000 C:\Github\ANY3dView\src\any3dview\gpu\renderer.py:2106(_surface_uniforms)
+        3    0.000    0.000    0.001    0.000 C:\Github\ANY3dView\src\any3dview\retained_viewer.py:3684(_render_hud)
+       12    0.000    0.000    0.001    0.000 C:\Github\ANY3dView\src\any3dview\gpu\renderer.py:2362(_draw_lines)
+      726    0.000    0.000    0.000    0.000 C:\Github\ANY3dView\src\any3dview\gpu\renderer.py:1355(_set_uniform_value)
+       24    0.000    0.000    0.000    0.000 C:\Github\ANY3dView\src\any3dview\gpu\renderer.py:2078(_uniforms)
+       27    0.000    0.000    0.000    0.000 C:\Github\ANY3dView\src\any3dview\gpu\hud.py:324(line)
+        9    0.000    0.000    0.000    0.000 C:\Github\ANY3dView\src\any3dview\gpu\renderer.py:1184(bind_line_semantics)
+       12    0.000    0.000    0.000    0.000 C:\Github\ANY3dView\src\any3dview\gpu\renderer.py:1157(bind_fields)
+      186    0.000    0.000    0.000    0.000 C:\Python\Python314\Lib\site-packages\_moderngl.py:68(value)
+       15    0.000    0.000    0.000    0.000 C:\Github\ANY3dView\src\any3dview\gpu\renderer.py:1823(_sync)
+        9    0.000    0.000    0.000    0.000 C:\Github\ANY3dView\src\any3dview\gpu\hud.py:406(text)
+       36    0.000    0.000    0.000    0.000 C:\Github\ANY3dView\src\any3dview\gpu\hud.py:61(_rgba)
+        3    0.000    0.000    0.000    0.000 C:\Github\ANY3dView\src\any3dview\gpu\renderer.py:2831(flush_points)
+        3    0.000    0.000    0.000    0.000 C:\Github\ANY3dView\src\any3dview\gpu\hud.py:437(render)
+       39    0.000    0.000    0.000    0.000 C:\Github\ANY3dView\src\any3dview\core.py:154(parse_color)
+      282    0.000    0.000    0.000    0.000 C:\Github\ANY3dView\src\any3dview\gpu\renderer.py:652(_has_uniform)
+        3    0.000    0.000    0.000    0.000 C:\Github\ANY3dView\src\any3dview\gpu\renderer.py:2495(_draw_points)
+      216    0.000    0.000    0.000    0.000 C:\Github\ANY3dView\src\any3dview\gpu\hud.py:274(_append)
+       84    0.000    0.000    0.000    0.000 {built-in method numpy.asarray}
+     1064    0.000    0.000    0.000    0.000 {method 'get' of 'dict' objects}
+        3    0.000    0.000    0.000    0.000 C:\Github\ANY3dView\src\any3dview\gpu\renderer.py:2027(_camera_frame)
+        3    0.000    0.000    0.000    0.000 C:\Python\Python314\Lib\site-packages\moderngl\__init__.py:1888(detect_framebuffer)
+        3    0.000    0.000    0.000    0.000 {method 'detect_framebuffer' of 'mgl.Context' objects}
+
+

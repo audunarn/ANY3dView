@@ -154,11 +154,45 @@ class _FrameProjection:
 
 def _arrays_equal(first, second) -> bool:
     """Exact array equality where None matches only None."""
+    if first is second:
+        return True
     if first is None or second is None:
-        return first is None and second is None
+        return False
     first = np.asarray(first)
     second = np.asarray(second)
     return first.shape == second.shape and bool(np.array_equal(first, second))
+
+
+def _immutable_array(value) -> bool:
+    """Only byte-backed arrays are safe to share across captured frames.
+
+    A mere writeable=False flag on owned memory can be reversed by callers.
+    """
+    while isinstance(value, np.ndarray):
+        if value.flags.writeable:
+            return False
+        value = value.base
+    return isinstance(value, bytes)
+
+
+def _animation_snapshot(mesh, previous=None):
+    """Freeze a frame and reuse already-proven equal immutable field arrays.
+
+    Equality work happens at capture, not on every playback transition. New
+    mutable inputs are still compared by value; changing topology/normals or
+    replacing a frame remains subject to the normal compatibility checks.
+    """
+    values = {}
+    for name in mesh.__dataclass_fields__:
+        value = getattr(mesh, name)
+        old = None if previous is None else getattr(previous, name)
+        if value is None:
+            values[name] = None
+        elif old is not None and old.dtype == value.dtype and _immutable_array(old) and _arrays_equal(value, old):
+            values[name] = old
+        else:
+            values[name] = np.frombuffer(value.tobytes(order="C"), dtype=value.dtype).reshape(value.shape)
+    return MeshArrays(**values)
 
 
 def _value_shapes_compatible(first, second) -> bool:
@@ -3156,14 +3190,19 @@ class RetainedViewer:
 
     def capture_animation_frame(self) -> None:
         meshes: list[dict[str, Any]] = []
+        previous_items = self._animation_cache[-1]["meshes"] if self._animation_cache else ()
         for entry in self._entries.values():
             handle: MeshHandle = entry["handle"]
             if handle.removed:
                 continue
+            previous = previous_items[len(meshes)] if len(meshes) < len(previous_items) else None
+            previous_chunks = {} if previous is None else {
+                key: mesh for key, mesh, _owners, _resolver in previous["chunks"]
+            }
             meshes.append({
-                "mesh": handle.mesh.owned_copy(),
+                "mesh": _animation_snapshot(handle.mesh, None if previous is None else previous["mesh"]),
                 "chunks": tuple(
-                    (key, mesh.owned_copy(), owners, resolver)
+                    (key, _animation_snapshot(mesh, previous_chunks.get(key)), owners, resolver)
                     for key, mesh, owners, resolver in handle.chunk_records
                 ),
                 "appearance": dict(entry.get("appearance", {})),

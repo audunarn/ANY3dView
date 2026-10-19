@@ -1,0 +1,21 @@
+{
+  "command": [
+    "C:/Python/Python314/python.exe",
+    "reports/gpu-sweep-20261019/bench_sweep.py",
+    "--source",
+    "src",
+    "--out",
+    "reports/gpu-sweep-20261019/dense",
+    "--backend",
+    "gpu",
+    "--frames",
+    "30",
+    "--profile",
+    "--spacing",
+    ".35"
+  ],
+  "timeout_s": 60.0,
+  "exit_code": 0,
+  "timed_out": false,
+  "process_wall_s": 4.788612900000089
+}

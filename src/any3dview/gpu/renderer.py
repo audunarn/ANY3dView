@@ -867,6 +867,8 @@ class _Chunk:
     line_element_map: Any = None
     node_scalar_texture: Any = None
     node_scalar_width: int = 1
+    displacement_buffer: Any = None
+    line_displacement_buffer: Any = None
 
     @classmethod
     @_release_failed_allocations
@@ -900,10 +902,15 @@ class _Chunk:
             if mesh.displacements is None
             else np.asarray(mesh.displacements, dtype=np.float32)
         )
-        interleaved = np.ascontiguousarray(np.column_stack((relative, displacement)))
-        vertex_payload = interleaved.tobytes()
+        # Static positions and dynamic displacement use separate attributes in
+        # every visible/pick VAO. Deformation never reuploads static geometry.
+        vertex_payload = np.ascontiguousarray(relative).tobytes()
         vertex_buffer = (
-            ctx.buffer(vertex_payload) if vertex_payload else ctx.buffer(reserve=24)
+            ctx.buffer(vertex_payload) if vertex_payload else ctx.buffer(reserve=12)
+        )
+        displacement_payload = np.ascontiguousarray(displacement).tobytes()
+        displacement_buffer = (
+            ctx.buffer(displacement_payload) if displacement_payload else ctx.buffer(reserve=12)
         )
         node_scalar_values = (
             np.zeros(mesh.node_count, dtype=np.float32)
@@ -920,7 +927,10 @@ class _Chunk:
         index_buffer = (
             ctx.buffer(index_payload) if index_payload else ctx.buffer(reserve=4)
         )
-        geometry_content = [(vertex_buffer, "3f 3f", "in_position", "in_displacement")]
+        geometry_content = [
+            (vertex_buffer, "3f", "in_position"),
+            (displacement_buffer, "3f", "in_displacement"),
+        ]
         render_content = [
             *geometry_content,
             (node_scalar_buffer, "1f", "in_node_scalar"),
@@ -934,23 +944,21 @@ class _Chunk:
         render_vao = ctx.vertex_array(render_program, render_content, index_buffer)
         pick_vao = ctx.vertex_array(pick_program, geometry_content, index_buffer)
         line_buffer = None
+        line_displacement_buffer = None
         line_endpoint_buffer = None
         node_scalar_texture = None
         node_scalar_width = 1
         line_render_vao = None
         line_pick_vao = None
         if mesh.lines is not None and len(mesh.lines):
-            line_data = cls._line_data(mesh, origin)
-            line_buffer = ctx.buffer(line_data.tobytes())
+            line_buffer = ctx.buffer(np.ascontiguousarray(relative[mesh.lines]).tobytes())
+            line_displacement_buffer = ctx.buffer(
+                np.ascontiguousarray(displacement[mesh.lines]).tobytes()
+            )
             line_content = [
-                (
-                    line_buffer,
-                    "3f 3f 3f 3f /i",
-                    "in_start",
-                    "in_end",
-                    "in_start_displacement",
-                    "in_end_displacement",
-                )
+                (line_buffer, "3f 3f /i", "in_start", "in_end"),
+                (line_displacement_buffer, "3f 3f /i",
+                 "in_start_displacement", "in_end_displacement"),
             ]
             line_endpoint_buffer = ctx.buffer(np.ascontiguousarray(mesh.lines,dtype=np.uint32).tobytes())
             node_scalar_texture,node_scalar_width = _packed_texture(ctx,node_scalar_values,"f4")
@@ -1089,6 +1097,8 @@ class _Chunk:
             line_element_map,
             node_scalar_texture,
             node_scalar_width,
+            displacement_buffer,
+            line_displacement_buffer,
         )
 
     @staticmethod
@@ -1126,6 +1136,8 @@ class _Chunk:
             self.point_pick_vao,
             self.point_index_buffer,
             self.vertex_buffer,
+            self.displacement_buffer,
+            self.line_displacement_buffer,
             self.node_scalar_buffer,
             self.normal_buffer,
             self.index_buffer,
@@ -1584,10 +1596,10 @@ class ModernGLRenderer:
                 continue
             state[attribute] = values
             changed.add(kind)
+            if attribute.startswith("hidden_"):
+                self.pick_dirty = True
         for kind in changed:
             self._write_chunk_semantic_mask(group, chunk_id, kind)
-        if changed:
-            self.pick_dirty = True
 
     def set_chunk_pickable(
         self, handle: MeshHandle, chunk_id: object, pickable: bool = True
@@ -1624,6 +1636,8 @@ class ModernGLRenderer:
         state = group.chunk_semantic_masks.get(chunk_id)
         if state is None:
             return
+        if any(len(state[name]) for name in ("hidden_elements", "hidden_lines", "hidden_points")):
+            self.pick_dirty = True
         group.chunk_semantic_masks[chunk_id] = self._empty_semantic_state()
         for kind in ("element", "line", "point"):
             self._write_chunk_semantic_mask(group, chunk_id, kind)
@@ -1727,10 +1741,10 @@ class ModernGLRenderer:
                 continue
             setattr(group, attribute, values)
             changed.add(kind)
+            if attribute.startswith("hidden_"):
+                self.pick_dirty = True
         for kind in changed:
             self._write_semantic_mask(group, kind)
-        if changed:
-            self.pick_dirty = True
 
     def _write_semantic_mask(self, group: _Group, kind: str) -> None:
         if kind == "element":
@@ -1906,18 +1920,16 @@ class ModernGLRenderer:
             for chunk_id, chunk in group.chunks:
                 mesh = sources[chunk_id]
                 if mesh.displacements is not chunk.mesh.displacements:
-                    relative = np.asarray(mesh.positions - chunk.origin, dtype=np.float32)
                     displacement = (
-                        np.zeros_like(relative)
+                        np.zeros((mesh.node_count, 3), dtype=np.float32)
                         if mesh.displacements is None
-                        else mesh.displacements.astype(np.float32, copy=False)
+                        else np.ascontiguousarray(mesh.displacements, dtype=np.float32)
                     )
-                    data = np.ascontiguousarray(
-                        np.column_stack((relative, displacement))
-                    )
-                    chunk.vertex_buffer.write(data.tobytes())
-                    if chunk.line_buffer is not None:
-                        chunk.line_buffer.write(_Chunk._line_data(mesh, chunk.origin).tobytes())
+                    chunk.displacement_buffer.write(displacement.tobytes())
+                    if chunk.line_displacement_buffer is not None:
+                        chunk.line_displacement_buffer.write(
+                            np.ascontiguousarray(displacement[mesh.lines]).tobytes()
+                        )
                     uploads += 1
             self.geometry_uploads += uploads
         if current.active != previous.active:

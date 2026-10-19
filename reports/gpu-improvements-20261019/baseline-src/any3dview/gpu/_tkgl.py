@@ -1,0 +1,104 @@
+"""Permissive Python host for the native TkGL widget.
+
+The bundled native extension is the separately licensed TkGL project.  This
+module is an original wrapper around TkGL's public Tcl widget commands; it
+does not contain code from the GPL-licensed ``tkinter-gl`` Python package.
+"""
+
+from __future__ import annotations
+
+import platform
+from pathlib import Path
+import sys
+import tkinter as tk
+from typing import Any, Optional
+
+
+_ASSET_ROOT = Path(__file__).with_name("tkgl")
+
+
+def _ensure_native_parent(parent: tk.Misc) -> None:
+    """Map an otherwise-unmapped Windows parent before creating a TkGL child.
+
+    The native TkGL widget needs a real parent HWND.  Calling ``update()`` for
+    every child creation, however, enters a nested Tk event loop.  That is
+    particularly unsafe while an application is replacing an already-mapped
+    viewer in response to a combobox event: it can dispatch the rest of that
+    transaction before the new surface has been installed.  A live parent
+    already has an HWND, so leave its event loop alone.  Only use the legacy
+    mapping fallback for a genuinely unmapped parent.
+    """
+
+    if sys.platform != "win32" or bool(parent.winfo_ismapped()):
+        return
+    parent.update_idletasks()
+    if not bool(parent.winfo_ismapped()):
+        parent.update()
+
+
+def _platform_package_directory() -> Path:
+    if sys.platform == "win32":
+        platform_name = "win32"
+    elif sys.platform == "darwin":
+        platform_name = "darwin"
+    elif sys.platform == "linux":
+        platform_name = f"linux-{platform.machine().lower()}"
+    else:
+        raise RuntimeError(f"TkGL is not packaged for platform {sys.platform!r}")
+
+    directory = _ASSET_ROOT / platform_name
+    if not directory.is_dir():
+        raise RuntimeError(
+            f"TkGL native package is unavailable for {platform_name!r}: {directory}"
+        )
+    return directory
+
+
+class GLCanvas(tk.Widget):
+    """Tk widget backed by the bundled, permissively licensed TkGL extension."""
+
+    profile = ""
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        cnf: Optional[dict[str, Any]] = None,
+        **options: Any,
+    ) -> None:
+        # TkGL needs a native parent window before it creates its child surface.
+        _ensure_native_parent(parent)
+
+        package_directory = _platform_package_directory()
+        parent.tk.call("lappend", "auto_path", str(package_directory))
+        parent.tk.call("package", "require", "Tkgl")
+
+        widget_options = dict(options)
+        if self.profile:
+            widget_options["profile"] = self.profile
+        tk.Widget.__init__(self, parent, "tkgl", cnf or {}, widget_options)
+        if sys.platform == "linux":
+            # Realize the X drawable before ModernGL detects the current context.
+            # winfo_id creates native ancestors without mapping the viewer or
+            # entering a nested event loop during construction.
+            self.winfo_id()
+        self.bind("<Expose>", self._queue_draw, add="+")
+        self.bind("<Map>", self._queue_draw, add="+")
+        self.update_idletasks()
+
+    def _queue_draw(self, _event: tk.Event) -> None:
+        self.after_idle(self.draw)
+
+    def make_current(self) -> None:
+        self.tk.call(self._w, "makecurrent")
+
+    def swap_buffers(self) -> None:
+        self.tk.call(self._w, "swapbuffers")
+
+    def gl_version(self) -> str:
+        return str(self.tk.call(self._w, "glversion"))
+
+    def gl_extensions(self) -> str:
+        return str(self.tk.call(self._w, "extensions"))
+
+    def draw(self) -> None:
+        """Render callback overridden by the owning viewer surface."""

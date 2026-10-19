@@ -1,0 +1,49 @@
+{
+  "timing/animation.png": {
+    "identical": true,
+    "differing_values": 0
+  },
+  "timing/initial.png": {
+    "identical": true,
+    "differing_values": 0
+  },
+  "timing/orbit.png": {
+    "identical": true,
+    "differing_values": 0
+  },
+  "initial_picks_identical": true,
+  "animation_picks_identical": true,
+  "oracle/active.png": {
+    "identical": true,
+    "differing_values": 0
+  },
+  "oracle/deformation.png": {
+    "identical": true,
+    "differing_values": 0
+  },
+  "oracle/hidden.png": {
+    "identical": true,
+    "differing_values": 0
+  },
+  "oracle/positions.png": {
+    "identical": true,
+    "differing_values": 0
+  },
+  "oracle/section.png": {
+    "identical": true,
+    "differing_values": 0
+  },
+  "oracle/selection.png": {
+    "identical": true,
+    "differing_values": 0
+  },
+  "oracle/transform.png": {
+    "identical": true,
+    "differing_values": 0
+  },
+  "oracle/unchanged.png": {
+    "identical": true,
+    "differing_values": 0
+  },
+  "mutation_picks_identical": true
+}

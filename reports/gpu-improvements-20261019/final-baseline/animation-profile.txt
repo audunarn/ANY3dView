@@ -1,0 +1,38 @@
+         35009 function calls in 0.160 seconds
+
+   Ordered by: cumulative time
+   List reduced from 258 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        6    0.000    0.000    0.161    0.027 C:\Github\ANY3dView\reports\gpu-improvements-20261019\bench_final.py:173(animate)
+        6    0.000    0.000    0.146    0.024 C:\Github\ANY3dView\reports\gpu-improvements-20261019\bench_final.py:59(paint)
+        6    0.038    0.006    0.142    0.024 {method 'grabFramebuffer' of 'PySide6.QtOpenGLWidgets.QOpenGLWidget' objects}
+        6    0.000    0.000    0.104    0.017 C:\Github\ANY3dView\reports\gpu-improvements-20261019\baseline-src\any3dview\qt.py:452(paintGL)
+        6    0.001    0.000    0.102    0.017 C:\Github\ANY3dView\reports\gpu-improvements-20261019\baseline-src\any3dview\gpu\renderer.py:2726(render)
+       30    0.008    0.000    0.096    0.003 C:\Github\ANY3dView\reports\gpu-improvements-20261019\baseline-src\any3dview\gpu\renderer.py:1809(_sync)
+        6    0.036    0.006    0.054    0.009 C:\Github\ANY3dView\reports\gpu-improvements-20261019\baseline-src\any3dview\gpu\renderer.py:1094(_line_data)
+       12    0.022    0.002    0.022    0.002 C:\Python\Python314\Lib\site-packages\numpy\lib\_shape_base_impl.py:625(column_stack)
+        6    0.000    0.000    0.015    0.002 C:\Github\ANY3dView\reports\gpu-improvements-20261019\baseline-src\any3dview\qt.py:697(_show_animation_frame)
+        6    0.000    0.000    0.015    0.002 C:\Github\ANY3dView\reports\gpu-improvements-20261019\baseline-src\any3dview\retained_viewer.py:3412(_show_animation_frame)
+       12    0.000    0.000    0.010    0.001 C:\Python\Python314\Lib\site-packages\moderngl\__init__.py:913(write)
+       12    0.010    0.001    0.010    0.001 {method 'write' of 'mgl.Texture' objects}
+        6    0.000    0.000    0.010    0.002 C:\Github\ANY3dView\reports\gpu-improvements-20261019\baseline-src\any3dview\retained_viewer.py:3373(_update_animation_handles)
+      120    0.008    0.000    0.008    0.000 {method 'tobytes' of 'numpy.ndarray' objects}
+       30    0.000    0.000    0.007    0.000 C:\Github\ANY3dView\reports\gpu-improvements-20261019\baseline-src\any3dview\retained_viewer.py:3342(_apply_animation_item)
+     2016    0.006    0.000    0.006    0.000 {built-in method numpy.asarray}
+      426    0.004    0.000    0.005    0.000 C:\Python\Python314\Lib\site-packages\numpy\_core\numeric.py:2535(array_equal)
+        6    0.000    0.000    0.005    0.001 C:\Github\ANY3dView\reports\gpu-improvements-20261019\baseline-src\any3dview\retained_viewer.py:3398(_finish_animation_frame)
+        6    0.000    0.000    0.005    0.001 C:\Github\ANY3dView\reports\gpu-improvements-20261019\baseline-src\any3dview\qt.py:687(_apply_highlight_masks)
+        6    0.000    0.000    0.005    0.001 C:\Github\ANY3dView\reports\gpu-improvements-20261019\baseline-src\any3dview\retained_viewer.py:1025(_apply_highlight_masks)
+      420    0.000    0.000    0.004    0.000 C:\Github\ANY3dView\reports\gpu-improvements-20261019\baseline-src\any3dview\retained_viewer.py:155(_arrays_equal)
+       12    0.000    0.000    0.003    0.000 C:\Python\Python314\Lib\dataclasses.py:1754(replace)
+       12    0.000    0.000    0.003    0.000 C:\Python\Python314\Lib\dataclasses.py:1773(_replace)
+       24    0.000    0.000    0.003    0.000 C:\Python\Python314\Lib\site-packages\moderngl\__init__.py:100(write)
+       12    0.000    0.000    0.003    0.000 C:\Github\ANY3dView\reports\gpu-improvements-20261019\baseline-src\any3dview\arrays.py:95(__post_init__)
+       24    0.003    0.000    0.003    0.000 {method 'write' of 'mgl.Buffer' objects}
+       30    0.000    0.000    0.003    0.000 C:\Github\ANY3dView\reports\gpu-improvements-20261019\baseline-src\any3dview\gpu\renderer.py:1649(set_semantic_masks)
+       30    0.000    0.000    0.003    0.000 C:\Github\ANY3dView\reports\gpu-improvements-20261019\baseline-src\any3dview\gpu\renderer.py:1685(_set_semantic_masks_partial)
+        6    0.000    0.000    0.003    0.001 C:\Python\Python314\Lib\site-packages\moderngl\__init__.py:1877(finish)
+        6    0.003    0.001    0.003    0.001 {method 'finish' of 'mgl.Context' objects}
+
+

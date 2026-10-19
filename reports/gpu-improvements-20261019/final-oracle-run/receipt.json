@@ -1,0 +1,17 @@
+{
+  "command": [
+    "C:/Python/Python314/python.exe",
+    "tools/bench_barge_review.py",
+    "--source",
+    "src",
+    "--out",
+    "reports/gpu-improvements-20261019/final-oracle",
+    "--backend",
+    "gpu",
+    "--oracle"
+  ],
+  "timeout_s": 25.0,
+  "exit_code": 0,
+  "timed_out": false,
+  "process_wall_s": 3.962104499999896
+}

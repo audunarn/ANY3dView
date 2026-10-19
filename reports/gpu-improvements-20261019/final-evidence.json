@@ -1,0 +1,39 @@
+{
+  "comparisons": {
+    "timing/animation.png": true,
+    "timing/initial.png": true,
+    "timing/orbit.png": true,
+    "picks": true,
+    "animation_picks": true,
+    "oracle/active.png": true,
+    "oracle/deformation.png": true,
+    "oracle/hidden.png": true,
+    "oracle/positions.png": true,
+    "oracle/section.png": true,
+    "oracle/selection.png": true,
+    "oracle/transform.png": true,
+    "oracle/unchanged.png": true,
+    "mutation_picks": true
+  },
+  "pick_samples": 246,
+  "source_hashes": {
+    "src\\any3dview\\gpu\\renderer.py": "47fc5e65f802ed0e5a3a85c9e105d7fc7e713e7d7dbb20cdedfd8e1f68b92e6c",
+    "src\\any3dview\\retained_viewer.py": "ab18786ca7798658ed8ef7c1e9617be18dc597f0d8021406816c0122fd95d3be",
+    "tests\\test_gpu_streaming_review.py": "865df40d627abad1eae0febac20a4700130bcf2032678d8747abc2a9a6173245"
+  },
+  "process_wall_seconds": 74.57057180000038,
+  "final-baseline": {
+    "triangles": 71760,
+    "orbit_median_ms": 2.7025499998671876,
+    "animation_median_ms": 27.387899999894216,
+    "highlight_pick_median_ms": 1.5923500000099011,
+    "highlight_pick_passes": 19
+  },
+  "final-candidate": {
+    "triangles": 71760,
+    "orbit_median_ms": 2.7747999999974127,
+    "animation_median_ms": 13.157800000044517,
+    "highlight_pick_median_ms": 0.8903000002646877,
+    "highlight_pick_passes": 0
+  }
+}

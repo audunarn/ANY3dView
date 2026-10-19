@@ -1,0 +1,21 @@
+{
+  "command": [
+    "C:/Python/Python314/python.exe",
+    "reports/gpu-improvements-20261019/bench_final.py",
+    "--source",
+    "src",
+    "--out",
+    "reports/gpu-improvements-20261019/final-candidate",
+    "--backend",
+    "gpu",
+    "--frames",
+    "60",
+    "--profile",
+    "--spacing",
+    ".07"
+  ],
+  "timeout_s": 40.0,
+  "exit_code": 0,
+  "timed_out": false,
+  "process_wall_s": 11.677720600000157
+}

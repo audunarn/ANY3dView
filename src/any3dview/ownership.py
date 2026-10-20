@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from itertools import chain
 from sys import intern
 from typing import Callable, Iterable, Optional, Sequence
 from uuid import UUID
@@ -56,11 +57,32 @@ ModelResolver = Callable[[UUID, str, int], object]
 def _csr(rows: Sequence[Sequence[int]]) -> tuple[np.ndarray, np.ndarray]:
     offsets = np.empty(len(rows) + 1, dtype=np.uint32)
     offsets[0] = 0
-    flattened: list[int] = []
-    for index, row in enumerate(rows):
-        flattened.extend(row)
-        offsets[index + 1] = len(flattened)
-    return offsets, np.asarray(flattened, dtype=np.uint32)
+    lengths = np.fromiter(map(len, rows), dtype=np.uint32, count=len(rows))
+    total = int(lengths.sum(dtype=np.uint64))
+    if total > _NONE:
+        raise OverflowError("owner mapping exceeds uint32 offsets")
+    np.cumsum(lengths, dtype=np.uint32, out=offsets[1:])
+    indices = np.fromiter(chain.from_iterable(rows), dtype=np.uint32, count=total)
+    return offsets, indices
+
+
+def _repeat_triangle_rows(table, repeats, line_count):
+    """Expand already encoded polygon owners without re-encoding each fan."""
+    row = np.repeat(np.arange(len(repeats), dtype=np.intp), repeats)
+    counts = np.diff(table.triangle_offsets)[row]
+    total = int(counts.sum(dtype=np.uint64))
+    if total > _NONE:
+        raise OverflowError("owner mapping exceeds uint32 offsets")
+    offsets = np.empty(len(row) + 1, dtype=np.uint32)
+    offsets[0] = 0
+    np.cumsum(counts, dtype=np.uint32, out=offsets[1:])
+    source = np.repeat(
+        table.triangle_offsets[row].astype(np.int64) - offsets[:-1], counts
+    ) + np.arange(total, dtype=np.int64)
+    return replace(table, triangle_offsets=offsets,
+                   triangle_indices=table.triangle_indices[source],
+                   line_offsets=np.zeros(int(line_count) + 1, dtype=np.uint32),
+                   line_indices=np.empty(0, dtype=np.uint32))
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,6 +172,11 @@ class PackedOwnerTable:
             shared: dict[int, tuple[tuple[Owner, ...], list[int]]] = {}
             rows: list[list[int]] = []
             for value in values:
+                if value is None:
+                    # Unowned outlines commonly outnumber owned triangles.
+                    # Share the empty row instead of creating a list per edge.
+                    rows.append(())
+                    continue
                 owners = normalized(value)
                 if not isinstance(value, (PickBinding, tuple)):
                     # ``normalized`` built a temporary tuple whose id may be

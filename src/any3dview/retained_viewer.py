@@ -25,7 +25,7 @@ from .core import (
     parse_color,
 )
 from .errors import GPUUnavailableError
-from .ownership import ModelOwner, PackedOwnerTable
+from .ownership import ModelOwner, PackedOwnerTable, _repeat_triangle_rows
 from .retained import MeshHandle
 from .semantic import SemanticRef, VisibilityState, semantic_refs
 from .scheduler import ViewerScheduler
@@ -2288,13 +2288,39 @@ class RetainedViewer:
         face_colors: Optional[Sequence[str]] = None,
         smooth_angle: Optional[float] = None,
     ) -> None:
-        points = np.asarray([as_point(value).to_tuple() for value in vertices], np.float64)
+        # Numeric polygon batches already contain coordinates. Avoid allocating
+        # a Point3D and tuple per vertex; retain the legacy coercion for None,
+        # Point3D values, generators and other supported point iterables.
+        point_values = None
+        numeric_vertices = (
+            type(vertices) is np.ndarray and vertices.dtype.kind in "biuf"
+        ) or (
+            type(vertices) in (list, tuple) and all(
+                (type(row) is np.ndarray and row.ndim == 1
+                 and row.shape == (3,) and row.dtype.kind in "biuf")
+                or (type(row) in (list, tuple) and len(row) == 3
+                    and all(type(value) in (bool, int, float) for value in row))
+                for row in vertices
+            )
+        )
+        if numeric_vertices:
+            try:
+                candidate = np.asarray(vertices)
+            except (TypeError, ValueError):
+                candidate = None
+            if (candidate is not None and candidate.ndim == 2
+                    and candidate.shape[1] == 3 and candidate.dtype.kind in "biuf"):
+                point_values = candidate
+        points = (
+            np.array(point_values, dtype=np.float64, copy=True) if point_values is not None else
+            np.asarray([as_point(value).to_tuple() for value in vertices], np.float64)
+        )
         face_values = [tuple(int(index) for index in face) for face in faces]
         triangles: list[tuple[int, int, int]] = []
         triangle_bindings: list[Optional[PickBinding]] = []
         triangle_colors: list[str] = []
         outline_groups: list[int] = []
-        edges: set[tuple[int, int]] = set()
+        edges: list[tuple[int, int]] = []
         for face_index, face in enumerate(face_values):
             if len(face) < 3:
                 continue
@@ -2307,13 +2333,22 @@ class RetainedViewer:
                 if face_color is not None:
                     triangle_colors.append(str(face_color))
             if outline:
-                edges.update(
-                    tuple(sorted((face[index - 1], face[index])))
+                edges.extend(
+                    (face[index - 1], face[index])
                     for index in range(len(face))
                 )
         if not triangles and not edges:
             return
-        lines = None if not edges else np.asarray(sorted(edges), np.uint32).reshape((-1, 2))
+        lines = None
+        if edges:
+            # A uint64 pair key preserves lexicographic endpoint order exactly.
+            # Canonicalize and deduplicate in NumPy instead of sorting every
+            # two-item Python tuple and inserting it into a Python set.
+            edge_array = np.asarray(edges, np.uint32).reshape((-1, 2))
+            low = edge_array.min(axis=1).astype(np.uint64)
+            high = edge_array.max(axis=1).astype(np.uint64)
+            keys = np.unique((low << np.uint64(32)) | high)
+            lines = np.column_stack((keys >> np.uint64(32), keys & np.uint64(0xffffffff))).astype(np.uint32)
         triangle_array = np.asarray(triangles, np.uint32).reshape((-1, 3))
         normals = None
         if smooth_angle is not None and len(triangle_array):
@@ -2422,6 +2457,80 @@ class RetainedViewer:
         )
 
 
+    def _numeric_face_batch(
+        self, polygons, *, color, outline, width, layer, cull_backface,
+        opacity, stipple, tags, lit, two_sided_shell, bindings,
+        back_color="", face_colors=None, smooth_angle=None,
+    ):
+        """Pack disjoint numeric polygons in the legacy fan/outline order.
+
+        Only exact numeric ndarrays admitted by add_faces reach this path.
+        Other point protocols retain _legacy_mesh_batch's original coercion.
+        """
+        if not all(type(polygon) is np.ndarray for polygon in polygons):
+            return False
+        sizes = np.fromiter(map(len, polygons), dtype=np.int64, count=len(polygons))
+        repetitions = np.maximum(sizes - 2, 0)
+        triangle_count = int(repetitions.sum())
+        # Legacy conversion precedes its empty-primitive return, including
+        # floating conversion errors for extended-precision short polygons.
+        points = np.asarray(np.concatenate(polygons, axis=0), dtype=np.float64)
+        if not triangle_count:
+            return True
+        offsets = np.empty(len(sizes) + 1, dtype=np.int64)
+        offsets[0] = 0
+        np.cumsum(sizes, out=offsets[1:])
+        if offsets[-1] > np.iinfo(np.uint32).max:
+            raise OverflowError("polygon indices exceed uint32 range")
+        face_indices = np.repeat(np.arange(len(sizes), dtype=np.uint32), repetitions)
+        fan_offsets = np.cumsum(repetitions) - repetitions
+        local = (np.arange(triangle_count, dtype=np.int64)
+                 - np.repeat(fan_offsets, repetitions) + 1)
+        first = offsets[face_indices]
+        triangles = np.column_stack((first, first + local, first + local + 1)).astype(np.uint32)
+        lines = None
+        if outline:
+            valid = np.flatnonzero(repetitions)
+            lengths = sizes[valid]
+            edge_faces = np.repeat(valid, lengths)
+            local = (np.arange(int(lengths.sum()), dtype=np.int64)
+                     - np.repeat(np.cumsum(lengths) - lengths, lengths))
+            first = offsets[edge_faces]
+            # Disjoint contiguous vertex ranges make these already sorted,
+            # unique edges: (0,1),(0,n-1),(1,2),...,(n-2,n-1).
+            left = first + np.maximum(local - 1, 0)
+            right = first + np.where(local == 0, 1,
+                                    np.where(local == 1, sizes[edge_faces] - 1, local))
+            lines = np.column_stack((left, right)).astype(np.uint32)
+        normals = None
+        if smooth_angle is not None:
+            from .normals import expand_with_smooth_normals
+            points, triangles, normals, lines = expand_with_smooth_normals(
+                points, triangles, float(smooth_angle), lines)
+        arrays = MeshArrays(points, triangles, lines=lines, normals=normals)
+        active = np.flatnonzero(repetitions)
+        active_bindings = [bindings[int(index)] for index in active]
+        owners = None
+        if any(binding is not None for binding in active_bindings):
+            owners = _repeat_triangle_rows(
+                PackedOwnerTable.from_owners(triangles=active_bindings),
+                repetitions[active], 0 if lines is None else len(lines))
+        colors = None
+        if face_colors is not None:
+            colors = tuple(np.repeat(np.asarray(face_colors, dtype=object), repetitions))
+        effective_two_sided = bool(two_sided_shell or stipple or float(opacity) < 0.97)
+        self.add_mesh_arrays(
+            arrays, color=color, outline=outline, width=width, layer=layer,
+            cull_backface=bool(cull_backface and not effective_two_sided),
+            opacity=opacity, stipple=stipple, tags=tags, lit=lit,
+            two_sided_shell=effective_two_sided, owners=owners,
+            line_color=outline or color, line_width=width, back_color=back_color,
+            face_colors=colors, _mesh_outline=bool(outline),
+            _outline_groups=face_indices,
+        )
+        return True
+
+
     def add_faces(
         self,
         polygons: Iterable[object],
@@ -2447,7 +2556,14 @@ class RetainedViewer:
         ``None`` keeps flat per-triangle shading.
         """
 
-        polygon_values = [list(polygon) for polygon in polygons]  # type: ignore[arg-type]
+        polygon_values = [
+            polygon.view() if (type(polygon) is np.ndarray and polygon.ndim == 2
+                        and polygon.shape[1] == 3 and polygon.dtype.kind in "biuf")
+            else list(polygon)
+            for polygon in polygons
+        ]  # type: ignore[arg-type]
+        # Like the former list of row views, snapshot shape/dtype before
+        # normalizing callbacks while retaining live coordinate storage.
         total = len(polygon_values)
         if total == 0:
             return
@@ -2470,6 +2586,14 @@ class RetainedViewer:
         # the hundreds, so this collapses N GPU batches (each a full set of GL
         # buffers/VAO/textures rebuilt every animation frame) into one.
         if len(set(back_values)) == 1 and len(set(color_values)) > 1:
+            if self._numeric_face_batch(
+                polygon_values, color=color_values[0], outline=outline, width=width,
+                layer=layer, cull_backface=cull_backface, opacity=opacity,
+                stipple=stipple, tags=tags, lit=lit, two_sided_shell=two_sided_shell,
+                bindings=binding_values, back_color=back_values[0],
+                face_colors=color_values, smooth_angle=smooth_angle,
+            ):
+                return
             vertices: list[object] = []
             faces: list[tuple[int, ...]] = []
             for index in range(total):
@@ -2491,6 +2615,15 @@ class RetainedViewer:
         for index, key in enumerate(zip(color_values, back_values)):
             groups.setdefault(key, []).append(index)
         for (front, back), indices in groups.items():
+            if self._numeric_face_batch(
+                [polygon_values[index] for index in indices],
+                color=front, outline=outline, width=width,
+                layer=layer, cull_backface=cull_backface, opacity=opacity,
+                stipple=stipple, tags=tags, lit=lit, two_sided_shell=two_sided_shell,
+                bindings=[binding_values[index] for index in indices],
+                back_color=back, smooth_angle=smooth_angle,
+            ):
+                continue
             vertices: list[object] = []
             faces: list[tuple[int, ...]] = []
             group_bindings: list[Optional[PickBinding]] = []

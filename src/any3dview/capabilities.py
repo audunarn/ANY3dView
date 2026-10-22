@@ -35,6 +35,7 @@ class ViewerCapabilities:
     semantic_visibility: bool = False
     viewer_commands: bool = False
     command_history: bool = False
+    face_color_update: bool = False
 
 
 CORE_CAPABILITIES = ViewerCapabilities(

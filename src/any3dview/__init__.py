@@ -41,7 +41,7 @@ from .ownership import ApplicationOwner, ModelOwner, PackedOwnerTable
 from .retained import DirtyGenerations, MeshHandle, RetainedViewer
 from .semantic import SemanticRef, VisibilityState
 from .scheduler import ViewerScheduler
-from .errors import GPUUnavailableError
+from .errors import FaceColorUpdateError, GPUUnavailableError
 from .factory import create_viewer
 from .hosts import TkViewerHostAdapter, ViewerHostAdapter
 from .shading import Light
@@ -78,6 +78,7 @@ __all__ = [
     "ModelOwner",
     "PackedOwnerTable",
     "RetainedViewer",
+    "FaceColorUpdateError",
     "GPUUnavailableError",
     "create_viewer",
     "PickBinding",

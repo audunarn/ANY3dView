@@ -49,6 +49,7 @@ class MeshHandle:
         "_deformation_scale",
         "_selected_elements",
         "_appearance",
+        "_face_color_sink",
     )
 
     def __init__(
@@ -60,6 +61,7 @@ class MeshHandle:
         validate_mesh: Optional[Callable[[MeshArrays], None]] = None,
         scalar_range: Optional[tuple[float,float]] = None,
         colormap: object = None,
+        on_face_colors: Optional[Callable[["MeshHandle", object], None]] = None,
     ) -> None:
         if not isinstance(mesh, MeshArrays):
             raise TypeError("mesh must be MeshArrays")
@@ -79,6 +81,7 @@ class MeshHandle:
         self._transform = np.eye(4, dtype=np.float64)
         self._deformation_scale = 0.0
         self._selected_elements = np.empty(0, dtype=np.uint64)
+        self._face_color_sink = on_face_colors
 
     def _check(self) -> None:
         if get_ident() != self._owner_thread:
@@ -250,6 +253,30 @@ class MeshHandle:
             self._visible = value
             self._change("appearance")
 
+    def update_face_colors(self, face_colors: object) -> None:
+        """Replace the per-face colours in place; geometry is untouched.
+
+        ``face_colors`` takes the per-face colour strings ``add_mesh_arrays``
+        accepts, or an ``(N, 3|4)`` uint8/integer array in [0, 255] or float
+        array in [0, 1] (opaque alpha only).  N must equal the triangle or the
+        element count.  The handle must have been registered with face
+        colours.  Geometry, transform, picking, ownership, selection,
+        opacity and dirty generations are unchanged; the backend rewrites
+        only its colour data.  Raises ``FaceColorUpdateError`` (a
+        ``ValueError``) on a refused update, ``RuntimeError`` for a removed
+        handle and ``NotImplementedError`` when the owning viewer does not
+        support in-place colour updates (see
+        ``ViewerCapabilities.face_color_update``).
+        """
+
+        self._check()
+        sink = self._face_color_sink
+        if sink is None:
+            raise NotImplementedError(
+                "this mesh handle's viewer does not support in-place face colour updates"
+            )
+        sink(self, face_colors)
+
     def set_transform(self, transform: object) -> None:
         self._check()
         matrix = np.asarray(transform, dtype=np.float64)
@@ -365,3 +392,4 @@ class MeshHandle:
         if callback is not None:
             callback(self, "remove")
         self._callback = None
+        self._face_color_sink = None

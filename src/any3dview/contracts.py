@@ -336,6 +336,21 @@ class ViewerBackend(Protocol):
         point_size: int = 6,
     ) -> MeshHandle: ...
 
+    def set_mesh_opacity(self, handle: MeshHandle, opacity: float) -> None:
+        """Set finite opacity in [0, 1] on an owned, live retained mesh."""
+        ...
+
+    def set_mesh_style(
+        self, handle: MeshHandle, *, opacity=..., lit=..., outline=...,
+        width=..., color=...,
+    ) -> None:
+        """Change validated draw style on an owned live mesh, retaining arrays.
+
+        Width is finite and at least 0.5 pixels; outline recolours existing
+        lines. Visibility and scalar appearance use their handle mutators.
+        """
+        ...
+
     def add_layer(self, layer: object) -> object: ...
 
     def add_line(

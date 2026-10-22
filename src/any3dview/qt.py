@@ -134,8 +134,8 @@ class _SoftwareResources:
         self.masks = {}
         self.chunk_masks = {}
         self.chunk_pickable = {}
-        # Bumped on every mask/appearance mutation so retained software
-        # preparation can invalidate without introspecting contents.
+        # Global diagnostic revision; preparation compares actual local masks
+        # so highlighting one handle does not invalidate every other handle.
         self.mask_revision = 0
 
     def add_mesh(self, handle, **appearance):
@@ -151,6 +151,24 @@ class _SoftwareResources:
                 self.chunk_masks.pop(key, None)
                 self.chunk_pickable.pop(key, None)
         self.mask_revision += 1
+
+    def set_mesh_opacity(self, handle, opacity):
+        handle._check()
+        appearance = self.appearance.get(id(handle))
+        if appearance is None:
+            raise ValueError("mesh handle does not belong to this renderer")
+        appearance["opacity"] = opacity
+        self.mask_revision += 1
+
+    def set_mesh_style(self, handle, **values):
+        handle._check()
+        appearance = self.appearance.get(id(handle))
+        if appearance is None:
+            raise ValueError("mesh handle does not belong to this renderer")
+        appearance.update(values)
+        self.mask_revision += 1
+        if "line_width" in values or ("opacity" in values and appearance.get("stipple")):
+            self.pick_dirty = True
 
     def set_semantic_masks(self, handle, **masks):
         self.masks[id(handle)] = masks
@@ -942,11 +960,19 @@ class QtViewer(RetainedViewer, QWidget):
             if key not in keep:
                 del cache[key]
 
-    def _software_prep_signature(self, entry, handle):
+    def _software_prep_signature(self, entry, handle, chunk_id=None):
         appearance = entry["appearance"]
+        mask = (self._renderer.masks.get(id(handle), {}) if chunk_id is None
+                else self._renderer.chunk_masks.get((id(handle),chunk_id), {}))
+        # Semantic passes republish masks for every handle, including unchanged
+        # ones. Snapshot values rather than mapping/array identity or a global
+        # revision. All channels participate, including lines and points.
+        masks = tuple((name, tuple(sorted({int(value) for value in values})))
+                      for name, values in sorted(mask.items()) if len(values))
         return (
             handle.generations,
-            getattr(self._renderer, "mask_revision", 0),
+            masks,
+            tuple(int(value) for value in handle.selected_elements),
             None if self._section_plane is None else self._section_plane.key,
             self._highlight_fill,
             handle.appearance.scalar_range,
@@ -954,17 +980,18 @@ class QtViewer(RetainedViewer, QWidget):
             appearance.get("color"),
             appearance.get("face_colors"),
             appearance.get("invalid_color"),
+            appearance.get("mesh_lines"),
         )
 
     def _software_chunk_prep(self, entry, handle, chunk_id, mesh, section):
         """Build or reuse the camera-invariant preparation for one chunk.
 
         The retained record is invalidated by its signature (handle
-        generations, semantic-mask revision, section plane, highlight
+        generations, local semantic-mask values, section plane, highlight
         fill and static color style); projection and submission stay
         per frame, so cached and direct paints give identical pixels.
         """
-        signature = self._software_prep_signature(entry, handle)
+        signature = (id(mesh), self._software_prep_signature(entry, handle, chunk_id))
         key = (id(handle), chunk_id)
         prep = self._software_prep.get(key)
         if prep is not None and prep.handle is handle and prep.signature == signature:
@@ -1025,7 +1052,7 @@ class QtViewer(RetainedViewer, QWidget):
                                    section_polygons, line_segments, line_selected,
                                    points, point_selected)
         prep.outline_loops = tuple(_surface_outline_loops(
-            mesh, triangles, self._outline_groups(entry, chunk_id, mesh)))
+            mesh, triangles, self._outline_groups(entry, chunk_id, mesh),entry.get("outline_vertex_ids") if chunk_id is None else None))
         cache = self._software_prep
         cache.pop(key, None)
         cache[key] = prep
@@ -1098,6 +1125,11 @@ class QtViewer(RetainedViewer, QWidget):
                     points.append((tuple(screen_all[node]),style))
         surfaces = [(depth, 0, screen, color, appearance) for depth, screen, color, appearance in faces]
         surfaces.extend((depth, 1, screen, None, appearance) for depth, screen, appearance in outlines)
+        # Painter styles repeat across thousands of section facets. Retain
+        # exact values for this paint only; geometry, order and draw operations
+        # remain unchanged, including fill/outline antialiasing boundaries.
+        pens, brushes = {}, {}
+        antialias, pen_key, brush_key = True, None, None
         # Keep the software painter's depth ordering: nearer fills must cover
         # more distant boundaries. At equal depth, fill before its own outline.
         for _, kind, screen, color, appearance in sorted(surfaces, key=lambda surface: (-float(f"{surface[0]:.12g}"), surface[1])):
@@ -1105,23 +1137,58 @@ class QtViewer(RetainedViewer, QWidget):
             if kind == 0:
                 # Antialiasing each tessellation triangle independently leaves
                 # pale seams where their partially covered edge pixels meet.
-                painter.setRenderHint(QPainter.Antialiasing, False)
-                fill=QColor(color); fill.setAlphaF(appearance["opacity"])
-                painter.setBrush(fill)
-                painter.setPen(Qt.NoPen)
+                if antialias:
+                    painter.setRenderHint(QPainter.Antialiasing, False)
+                    antialias = False
+                fill_key = (color, appearance["opacity"])
+                if brush_key != fill_key:
+                    fill = brushes.get(fill_key)
+                    if fill is None:
+                        fill=QColor(color); fill.setAlphaF(appearance["opacity"])
+                        brushes[fill_key] = fill
+                    painter.setBrush(fill)
+                    brush_key = fill_key
+                if pen_key != Qt.NoPen:
+                    painter.setPen(Qt.NoPen)
+                    pen_key = Qt.NoPen
                 painter.drawPolygon(polygon)
             else:
-                painter.setRenderHint(QPainter.Antialiasing, True)
-                painter.setBrush(Qt.NoBrush)
-                painter.setPen(QPen(QColor(appearance["line_color"]), appearance["line_width"]*pixel_ratio))
+                if not antialias:
+                    painter.setRenderHint(QPainter.Antialiasing, True)
+                    antialias = True
+                if brush_key != Qt.NoBrush:
+                    painter.setBrush(Qt.NoBrush)
+                    brush_key = Qt.NoBrush
+                style_key = (appearance["line_color"], appearance["line_width"]*pixel_ratio)
+                if pen_key != style_key:
+                    pen = pens.get(style_key)
+                    if pen is None:
+                        pen=QPen(QColor(style_key[0]),style_key[1]);pens[style_key]=pen
+                    painter.setPen(pen)
+                    pen_key = style_key
                 painter.drawPolyline(polygon)
-        painter.setRenderHint(QPainter.Antialiasing, True)
+        if not antialias:
+            painter.setRenderHint(QPainter.Antialiasing, True)
         for a,b,appearance in lines:
-            painter.setPen(QPen(QColor(appearance["line_color"]),appearance["line_width"]*pixel_ratio))
+            style_key = (appearance["line_color"],appearance["line_width"]*pixel_ratio)
+            if pen_key != style_key:
+                pen = pens.get(style_key)
+                if pen is None:
+                    pen=QPen(QColor(style_key[0]),style_key[1]);pens[style_key]=pen
+                painter.setPen(pen)
+                pen_key = style_key
             painter.drawLine(QPointF(*a[:2]),QPointF(*b[:2]))
         for p,appearance in points:
-            painter.setBrush(QColor(appearance["point_color"]))
-            painter.setPen(Qt.NoPen)
+            fill_key = (appearance["point_color"], None)
+            if brush_key != fill_key:
+                fill = brushes.get(fill_key)
+                if fill is None:
+                    fill=QColor(appearance["point_color"]);brushes[fill_key]=fill
+                painter.setBrush(fill)
+                brush_key = fill_key
+            if pen_key != Qt.NoPen:
+                painter.setPen(Qt.NoPen)
+                pen_key = Qt.NoPen
             r=appearance["point_size"]*pixel_ratio/2
             painter.drawEllipse(QPointF(*p[:2]),r,r)
         self._hud.painter=painter

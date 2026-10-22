@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from numbers import Real
 import os
 from copy import deepcopy
 import sys
@@ -82,18 +83,25 @@ GPU_CAPABILITIES = ViewerCapabilities(
 )
 
 
-def _surface_outline_loops(mesh, triangles, groups=None):
+def _surface_outline_loops(mesh, triangles, groups=None, vertex_ids=None):
     """Recover boundaries from indexed topology, never coordinates or owner tags.
 
     Only explicit polygon/element grouping removes an internal edge.  In its
-    absence every input triangle is a separate surface element.
+    absence every input triangle is a separate surface element. ``vertex_ids``
+    preserves the original indexed identity when shading splits triangle
+    corners; equal coordinates alone never establish shared topology.
     """
     mapping = groups if groups is not None else mesh.triangle_to_element
     edges = {}
+    representatives={}
+    if vertex_ids is not None and len(vertex_ids)!=len(mesh.positions):vertex_ids=None
     for triangle in triangles:
         group = int(mapping[triangle]) if mapping is not None else int(triangle)
         counts = edges.setdefault(group, {})
         indices = mesh.triangles[triangle]
+        if vertex_ids is not None:
+            for index in indices:representatives.setdefault(int(vertex_ids[index]),int(index))
+            indices=vertex_ids[indices]
         for a, b in zip(indices, np.roll(indices, -1)):
             edge = tuple(sorted((int(a), int(b))))
             counts[edge] = counts.get(edge, 0) + 1
@@ -106,7 +114,7 @@ def _surface_outline_loops(mesh, triangles, groups=None):
         # A nonmanifold boundary has no unambiguous ring. Preserve its actual
         # edges rather than invent a closing segment through the surface.
         if any(len(neighbors) != 2 for neighbors in adjacency.values()):
-            yield from sorted(boundary)
+            yield from (tuple(representatives.get(index,index) for index in edge) for edge in sorted(boundary))
             continue
         while boundary:
             a, b = min(boundary)
@@ -117,7 +125,18 @@ def _surface_outline_loops(mesh, triangles, groups=None):
                 following = next(value for value in adjacency[current] if value != ring[-2])
                 boundary.remove(tuple(sorted((current, following))))
                 ring.append(following)
-            yield tuple(ring[:-1])
+            yield tuple(representatives.get(index,index) for index in ring[:-1])
+
+
+def _expand_surface_normals(points,triangles,crease,lines):
+    from .normals import expand_with_smooth_normals
+    identity=np.asarray(triangles,dtype=np.uint32).reshape(-1).copy()
+    old_count=len(points)
+    points,triangles,normals,lines=expand_with_smooth_normals(points,triangles,crease,lines)
+    if len(points)>len(identity):
+        used=np.zeros(old_count,dtype=bool);used[identity]=True
+        identity=np.concatenate((identity,np.flatnonzero(~used).astype(np.uint32)))
+    return points,triangles,normals,lines,identity
 
 
 _CPU_POINT_STACK_LIMIT = 50_000
@@ -2020,6 +2039,113 @@ class RetainedViewer:
         )
 
 
+    def set_mesh_opacity(self, handle: MeshHandle, opacity: float) -> None:
+        """Change a live mesh's opacity without replacing arrays or GPU buffers.
+
+        The handle must belong to this viewer and its owning thread. Existing
+        face culling, visibility, selection and scalar appearance are preserved.
+        """
+        if not isinstance(handle, MeshHandle):
+            raise TypeError("handle must be MeshHandle")
+        handle._check()
+        if self._closed:
+            raise RuntimeError("viewer has been closed")
+        entry = self._entries.get(id(handle))
+        if entry is None or entry["handle"] is not handle:
+            raise ValueError("mesh handle does not belong to this viewer")
+        if isinstance(opacity, (bool, np.bool_)) or not isinstance(opacity, Real):
+            raise TypeError("opacity must be a real number")
+        opacity = float(opacity)
+        if not math.isfinite(opacity) or not 0.0 <= opacity <= 1.0:
+            raise ValueError("opacity must be finite and between 0 and 1")
+        previous = entry["appearance"]["opacity"]
+        if opacity == previous:
+            return
+        update = getattr(self._renderer, "set_mesh_opacity", None)
+        if not callable(update):
+            raise NotImplementedError("renderer does not support retained opacity")
+        pick_dirty = self._renderer.pick_dirty
+        try:
+            update(handle, opacity)
+            entry["appearance"]["opacity"] = opacity
+            self.redraw()
+        except BaseException:
+            entry["appearance"]["opacity"] = previous
+            update(handle, previous)
+            self._renderer.pick_dirty = pick_dirty
+            raise
+
+    def set_mesh_style(
+        self, handle: MeshHandle, *, opacity=..., lit=..., outline=...,
+        width=..., color=...,
+    ) -> None:
+        """Update retained draw style without uploading geometry or scalar fields.
+
+        ``outline`` changes the colour of existing line primitives; it does not
+        create edges. Use the handle's visibility API for separate edge groups.
+        Scalar range and colormap remain on ``handle.update_appearance``.
+        """
+        if not isinstance(handle, MeshHandle):
+            raise TypeError("handle must be MeshHandle")
+        handle._check()
+        if self._closed:
+            raise RuntimeError("viewer has been closed")
+        entry = self._entries.get(id(handle))
+        if entry is None or entry["handle"] is not handle:
+            raise ValueError("mesh handle does not belong to this viewer")
+        values = {}
+        for name, value in (("opacity", opacity), ("line_width", width)):
+            if value is ...:
+                continue
+            if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+                raise TypeError(f"{name} must be a real number")
+            value = float(value)
+            if not math.isfinite(value) or (not 0 <= value <= 1 if name == "opacity" else value < .5):
+                raise ValueError(f"{name} must be finite and " +
+                                 ("between 0 and 1" if name == "opacity" else "at least 0.5"))
+            values[name] = value
+        if lit is not ...:
+            if not isinstance(lit, (bool, np.bool_)):
+                raise TypeError("lit must be boolean")
+            values["lit"] = bool(lit)
+        for name, value in (("line_color", outline), ("color", color)):
+            if value is ...:
+                continue
+            if not isinstance(value, str):
+                raise TypeError(f"{name} must be a colour string")
+            if parse_color(value) is None:
+                raise ValueError(f"{name} must be a supported colour")
+            values[name] = value
+        defaults = {"opacity": 1., "lit": True, "line_width": 1.,
+                    "line_color": "#334155", "color": "#9aa7b4"}
+        previous = {name: entry["appearance"].get(name, defaults[name]) for name in values}
+        values = {name: value for name, value in values.items() if value != previous[name]}
+        previous = {name: previous[name] for name in values}
+        if not values:
+            return
+        update = getattr(self._renderer, "set_mesh_style", None)
+        if not callable(update):
+            raise NotImplementedError("renderer does not support retained style")
+        saved = dict(entry["appearance"])
+        pick_dirty = self._renderer.pick_dirty
+        mask_revision = getattr(self._renderer, "mask_revision", None)
+        try:
+            update(handle, **values)
+            entry["appearance"].update(values)
+            self.redraw()
+        except BaseException as error:
+            entry["appearance"].clear()
+            entry["appearance"].update(saved)
+            try:
+                update(handle, **previous)
+            except BaseException as rollback_error:
+                raise error from rollback_error
+            finally:
+                self._renderer.pick_dirty = pick_dirty
+                if mask_revision is not None:
+                    self._renderer.mask_revision = mask_revision
+            raise
+
     def _mesh_changed(self, handle: MeshHandle, change: str) -> None:
         if change == "remove":
             self._renderer.remove_mesh(handle)
@@ -2214,6 +2340,7 @@ class RetainedViewer:
             "hit_points": {},
             "chunk_semantics": {},
             "outline_groups": _appearance.get("_outline_groups"),
+            "outline_vertex_ids": _appearance.get("_outline_vertex_ids"),
             "outline_topology": mesh.triangles,
         }
         try:
@@ -2351,10 +2478,9 @@ class RetainedViewer:
             lines = np.column_stack((keys >> np.uint64(32), keys & np.uint64(0xffffffff))).astype(np.uint32)
         triangle_array = np.asarray(triangles, np.uint32).reshape((-1, 3))
         normals = None
+        outline_vertex_ids=None
         if smooth_angle is not None and len(triangle_array):
-            from .normals import expand_with_smooth_normals
-
-            points, triangle_array, normals, lines = expand_with_smooth_normals(
+            points, triangle_array, normals, lines, outline_vertex_ids = _expand_surface_normals(
                 points, triangle_array, float(smooth_angle), lines
             )
         arrays = MeshArrays(points, triangle_array, lines=lines, normals=normals)
@@ -2386,6 +2512,7 @@ class RetainedViewer:
             face_colors=None if not triangle_colors else tuple(triangle_colors),
             _mesh_outline=bool(outline),
             _outline_groups=np.asarray(outline_groups, dtype=np.uint32),
+            _outline_vertex_ids=outline_vertex_ids,
         )
 
 
@@ -2503,9 +2630,9 @@ class RetainedViewer:
                                     np.where(local == 1, sizes[edge_faces] - 1, local))
             lines = np.column_stack((left, right)).astype(np.uint32)
         normals = None
+        outline_vertex_ids=None
         if smooth_angle is not None:
-            from .normals import expand_with_smooth_normals
-            points, triangles, normals, lines = expand_with_smooth_normals(
+            points, triangles, normals, lines, outline_vertex_ids = _expand_surface_normals(
                 points, triangles, float(smooth_angle), lines)
         arrays = MeshArrays(points, triangles, lines=lines, normals=normals)
         active = np.flatnonzero(repetitions)
@@ -2527,6 +2654,7 @@ class RetainedViewer:
             line_color=outline or color, line_width=width, back_color=back_color,
             face_colors=colors, _mesh_outline=bool(outline),
             _outline_groups=face_indices,
+            _outline_vertex_ids=outline_vertex_ids,
         )
         return True
 
@@ -3340,6 +3468,7 @@ class RetainedViewer:
                 ),
                 "appearance": dict(entry.get("appearance", {})),
                 "outline_groups": None if entry.get("outline_groups") is None else np.asarray(entry["outline_groups"]).copy(),
+                "outline_vertex_ids": None if entry.get("outline_vertex_ids") is None else np.asarray(entry["outline_vertex_ids"]).copy(),
                 "transform": np.asarray(handle.transform).copy(),
                 "deformation_scale": handle.deformation_scale,
                 "selected": np.asarray(handle.selected_elements).copy(),
@@ -3427,6 +3556,7 @@ class RetainedViewer:
             "owner_resolver": item["owner_resolver"],
             "appearance": item["appearance"],
             "outline_groups": item.get("outline_groups"),
+            "outline_vertex_ids": item.get("outline_vertex_ids"),
             "outline_topology": handle.mesh.triangles,
             "layer": item["layer"],
             "tags": item["tags"],
@@ -3701,6 +3831,7 @@ class RetainedViewer:
             topology = entry.get("outline_topology")
             if len(groups) != mesh.triangle_count or (topology is not mesh.triangles and not np.array_equal(topology, mesh.triangles)):
                 entry["outline_groups"] = None
+                entry["outline_vertex_ids"] = None
                 return None
         return groups
 
@@ -3722,12 +3853,12 @@ class RetainedViewer:
                 .5 * height - camera[:, 1] * scale / camera[:, 2],
                 camera[:, 2],
             ))
-            for loop in _surface_outline_loops(mesh, triangles, groups):
+            for loop in _surface_outline_loops(mesh, triangles, groups,entry.get("outline_vertex_ids") if chunk_id is None else None):
                 edges = [loop] if len(loop) == 2 else zip(loop, (*loop[1:], loop[0]))
                 for a, b in edges:
                     yield (tuple(screen[a]), tuple(screen[b]))
             return
-        for loop in _surface_outline_loops(mesh, triangles, groups):
+        for loop in _surface_outline_loops(mesh, triangles, groups,entry.get("outline_vertex_ids") if chunk_id is None else None):
             edges = [loop] if len(loop) == 2 else zip(loop, (*loop[1:], loop[0]))
             for edge in edges:
                 points = self._project_outline_segment(world[list(edge)], frame)

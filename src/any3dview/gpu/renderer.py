@@ -1472,6 +1472,36 @@ class ModernGLRenderer:
         self.geometry_uploads += len(chunks)
         self.pick_dirty = True
 
+    def set_mesh_opacity(self, handle: MeshHandle, opacity: float) -> None:
+        """Update draw uniforms only; retained geometry and fields stay intact."""
+        handle._check()
+        group = self._groups.get(id(handle))
+        if group is None or group.handle is not handle:
+            raise ValueError("mesh handle does not belong to this renderer")
+        group.opacity = opacity
+        # Explicit stipple uses opacity to determine coverage in the pick pass.
+        # Plain blended opacity has no effect on integer picking.
+        if group.stipple:
+            self.pick_dirty = True
+
+    def set_mesh_style(self, handle: MeshHandle, **values) -> None:
+        """Apply viewer-validated draw options without changing buffer bindings."""
+        handle._check()
+        group = self._groups.get(id(handle))
+        if group is None or group.handle is not handle:
+            raise ValueError("mesh handle does not belong to this renderer")
+        for name, value in values.items():
+            setattr(group, name, value)
+            if name == "color":
+                for _chunk_id, chunk in group.chunks:
+                    chunk.color = value
+        if ("opacity" in values and group.stipple) or (
+            "line_width" in values and any(chunk.mesh.lines is not None and len(chunk.mesh.lines)
+                                         for _, chunk in group.chunks)
+        ):
+            # Width changes line pick coverage; lighting and colours do not.
+            self.pick_dirty = True
+
     def remove_mesh(self, handle: MeshHandle) -> None:
         group = self._groups.pop(id(handle), None)
         if group is not None:

@@ -15,7 +15,7 @@ from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
 from .core import Point3D, parse_color, _interpolate_thickness_color
 from .appearance import scalar_color
-from .errors import GPUUnavailableError
+from .errors import FaceColorUpdateError, GPUUnavailableError
 from .retained_viewer import RetainedViewer, GPU_CAPABILITIES, _FrameProjection, _surface_outline_loops
 
 
@@ -105,6 +105,10 @@ class _SoftwareChunkPrep:
         self.outline_loops = ()
 
 
+# Position of the per-face colour tuple in ``_software_prep_signature``.
+_FACE_COLOR_SLOT = 7
+
+
 class _QtGLLoader:
     """Resolve functions through the widget's current Qt context, including EGL."""
     def __init__(self, context):
@@ -142,6 +146,17 @@ class _SoftwareResources:
         self.appearance[id(handle)] = appearance
         self.geometry_uploads += 1
         self.mask_revision += 1
+
+    def update_face_colors(self, handle, face_colors, *, rgb=None):
+        """Replace retained per-face colour strings; masks stay valid.
+
+        The painter's retained preparation keys on the colour tuple and
+        rebuilds only its colour list (see ``_software_chunk_prep``).
+        """
+        appearance = self.appearance.get(id(handle))
+        if appearance is None:
+            raise FaceColorUpdateError("mesh handle is not registered with this renderer")
+        appearance["face_colors"] = tuple(face_colors)
 
     def remove_mesh(self, handle):
         self.appearance.pop(id(handle), None)
@@ -996,6 +1011,16 @@ class QtViewer(RetainedViewer, QWidget):
         prep = self._software_prep.get(key)
         if prep is not None and prep.handle is handle and prep.signature == signature:
             return prep
+        if (prep is not None and prep.handle is handle
+                and prep.signature[:_FACE_COLOR_SLOT] == signature[:_FACE_COLOR_SLOT]
+                and prep.signature[_FACE_COLOR_SLOT + 1:] == signature[_FACE_COLOR_SLOT + 1:]
+                and prep.signature[_FACE_COLOR_SLOT] and signature[_FACE_COLOR_SLOT]):
+            # Only the per-face colours changed (update_face_colors): keep the
+            # world arrays, admission, section polygons, lines, points and
+            # outlines, and rebuild just the colour list.
+            prep.colors = self._software_recolor(entry, handle, chunk_id, mesh, prep.triangles)
+            prep.signature = signature
+            return prep
         appearance = dict(entry["appearance"],scalar_range=handle.appearance.scalar_range,colormap=handle.appearance.colormap)
         positions = mesh.positions
         if mesh.displacements is not None:
@@ -1059,6 +1084,32 @@ class QtViewer(RetainedViewer, QWidget):
         while len(cache) > _SOFTWARE_PREP_LIMIT:
             cache.pop(next(iter(cache)))
         return prep
+
+    def _software_recolor(self, entry, handle, chunk_id, mesh, triangles):
+        """Per-triangle colours for admitted ``triangles`` with face colours set.
+
+        Mirrors the colour choice of the full preparation loop above for the
+        face-colour case (where scalar colouring does not apply), so a
+        recoloured preparation paints exactly what a fresh one would.
+        """
+        colors = entry["appearance"]["face_colors"]
+        mask = self._renderer.masks.get(id(handle), {}) if chunk_id is None else self._renderer.chunk_masks.get((id(handle),chunk_id), {})
+        highlighted = set(mask.get("selected_elements", ())) | set(handle.selected_elements)
+        preselected = set(mask.get("preselected_elements", ()))
+        by_triangle = len(colors) == mesh.triangle_count
+        mapping = mesh.triangle_to_element
+        fill = self._highlight_fill
+        result = []
+        for index in triangles:
+            element = int(mapping[index]) if mapping is not None else index
+            if element in highlighted:
+                color = fill
+            else:
+                color = colors[index if by_triangle else element]
+                if element in preselected:
+                    color = "#ffd166"
+            result.append(color)
+        return result
 
     def _paint_software(self, painter):
         self._prune_software_prep()

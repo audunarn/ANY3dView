@@ -22,6 +22,8 @@ from ..arrays import MeshArrays
 from ..appearance import validated_appearance,palette_data
 from ..clipping import SectionPlane
 from ..core import Camera3D, _interpolate_thickness_color, parse_color
+from ..errors import FaceColorUpdateError
+from ..face_colors import normalize_face_colors
 from ..retained import DirtyGenerations, MeshHandle
 
 
@@ -1349,6 +1351,7 @@ class ModernGLRenderer:
         self.semantic_buffer_updates = 0
         self.scalar_buffer_updates = 0
         self.palette_updates = 0
+        self.face_color_updates = 0
         self.appearance_updates = 0
         self.palette_write_failures = 0
 
@@ -1501,6 +1504,62 @@ class ModernGLRenderer:
         ):
             # Width changes line pick coverage; lighting and colours do not.
             self.pick_dirty = True
+
+    def update_face_colors(
+        self,
+        handle: MeshHandle,
+        face_colors: object,
+        *,
+        rgb: Optional[np.ndarray] = None,
+    ) -> None:
+        """Rewrite one mesh's per-face colour texture in place.
+
+        ``face_colors`` is a per-face colour specification (see
+        ``normalize_face_colors``); ``rgb`` may carry its precomputed
+        ``(N, 3)`` float32 form, in which case ``face_colors`` must be the
+        matching string tuple.  The existing texture is overwritten with the
+        same layout ``_color_texture`` builds: no buffer, texture or vertex
+        array is created, and geometry, picking and semantic state are
+        untouched.  The retained strings also feed later chunk rebuilds.
+        """
+
+        group = self._groups.get(id(handle))
+        if group is None or group.handle is not handle:
+            raise FaceColorUpdateError("mesh handle is not registered with this renderer")
+        chunk = next((chunk for chunk_id, chunk in group.chunks if chunk_id is None), None)
+        if chunk is None or not chunk.has_face_colors or not group.face_colors:
+            raise FaceColorUpdateError(
+                "cannot update face colours of a mesh registered without face colours"
+            )
+        if rgb is None:
+            strings, rgb = normalize_face_colors(face_colors)
+        else:
+            strings = tuple(face_colors)  # type: ignore[arg-type]
+            rgb = np.asarray(rgb, dtype=np.float32)
+            if rgb.shape != (len(strings), 3):
+                raise FaceColorUpdateError("rgb must have shape (len(face_colors), 3)")
+        mesh = chunk.mesh
+        if len(strings) == mesh.triangle_count:
+            per_triangle = rgb
+        elif len(strings) == mesh.element_count:
+            mapping = (
+                np.arange(mesh.triangle_count, dtype=np.intp)
+                if mesh.triangle_to_element is None
+                else mesh.triangle_to_element.astype(np.intp, copy=False)
+            )
+            per_triangle = rgb[mapping]
+        else:
+            raise FaceColorUpdateError(
+                f"face colour count {len(strings)} matches neither the triangle count "
+                f"{mesh.triangle_count} nor the element count {mesh.element_count}"
+            )
+        texture = chunk.face_colors
+        width, height = texture.size
+        padded = np.zeros((width * height, 3), dtype=np.float32)
+        padded[: len(per_triangle)] = per_triangle
+        texture.write(padded.tobytes())
+        group.face_colors = strings
+        self.face_color_updates += 1
 
     def remove_mesh(self, handle: MeshHandle) -> None:
         group = self._groups.pop(id(handle), None)

@@ -25,7 +25,8 @@ from .core import (
     as_point,
     parse_color,
 )
-from .errors import GPUUnavailableError
+from .errors import FaceColorUpdateError, GPUUnavailableError
+from .face_colors import normalize_face_colors
 from .ownership import ModelOwner, PackedOwnerTable, _repeat_triangle_rows
 from .retained import MeshHandle
 from .semantic import SemanticRef, VisibilityState, semantic_refs
@@ -80,6 +81,7 @@ GPU_CAPABILITIES = ViewerCapabilities(
     semantic_visibility=True,
     viewer_commands=True,
     command_history=True,
+    face_color_update=True,
 )
 
 
@@ -2179,6 +2181,43 @@ class RetainedViewer:
             raise
 
 
+    def _update_handle_face_colors(self, handle: MeshHandle, face_colors: object) -> None:
+        """Backend of ``MeshHandle.update_face_colors`` (validated, atomic).
+
+        Only colour state changes: generations, picking/selection caches and
+        GPU geometry stay as they are.  While an animation frame is shown the
+        live meshes are detached from the renderer, so only the retained
+        appearance is updated and the live restore re-uploads it.
+        """
+
+        entry = self._entries.get(id(handle))
+        if entry is None or entry["handle"] is not handle:
+            raise FaceColorUpdateError("mesh handle is not registered with this viewer")
+        appearance = entry["appearance"]
+        if not appearance.get("face_colors"):
+            raise FaceColorUpdateError(
+                "cannot update face colours of a mesh registered without face colours"
+            )
+        mesh = handle.mesh
+        strings, rgb = normalize_face_colors(face_colors)
+        if len(strings) not in (mesh.triangle_count, mesh.element_count):
+            raise FaceColorUpdateError(
+                f"face colour count {len(strings)} matches neither the triangle count "
+                f"{mesh.triangle_count} nor the element count {mesh.element_count}"
+            )
+        if not self._animation_frame_active:
+            update = getattr(self._renderer, "update_face_colors", None)
+            if update is None:
+                raise NotImplementedError(
+                    f"{self.backend_name} renderer does not support in-place face colour updates"
+                )
+            self._host.make_current()
+            update(handle, strings, rgb=rgb)
+        appearance["face_colors"] = strings
+        entry["face_colors"] = strings
+        self.redraw()
+
+
     def _validate_mesh_support(self, mesh: MeshArrays, *, backend: Optional[str] = None) -> None:
         selected = self.backend_name if backend is None else backend
         if selected != "gpu" and mesh.lines is not None and len(mesh.lines):
@@ -2293,7 +2332,7 @@ class RetainedViewer:
             0, mesh.triangle_count, mesh.element_count
         ):
             raise ValueError("face_colors must match triangle or element count")
-        handle = MeshHandle(mesh,on_change=self._mesh_changed,validate_mesh=self._validate_mesh_support,scalar_range=scalar_range,colormap=colormap)
+        handle = MeshHandle(mesh,on_change=self._mesh_changed,validate_mesh=self._validate_mesh_support,scalar_range=scalar_range,colormap=colormap,on_face_colors=self._update_handle_face_colors)
         effective_line_color = str(line_color or outline or "#334155")
         effective_line_width = float(width if line_width is None else line_width)
         appearance = {

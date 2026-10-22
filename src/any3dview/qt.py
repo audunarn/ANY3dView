@@ -106,7 +106,7 @@ class _SoftwareChunkPrep:
 
 
 # Position of the per-face colour tuple in ``_software_prep_signature``.
-_FACE_COLOR_SLOT = 7
+_FACE_COLOR_SLOT = 8
 
 
 class _QtGLLoader:
@@ -1012,9 +1012,10 @@ class QtViewer(RetainedViewer, QWidget):
         if prep is not None and prep.handle is handle and prep.signature == signature:
             return prep
         if (prep is not None and prep.handle is handle
-                and prep.signature[:_FACE_COLOR_SLOT] == signature[:_FACE_COLOR_SLOT]
-                and prep.signature[_FACE_COLOR_SLOT + 1:] == signature[_FACE_COLOR_SLOT + 1:]
-                and prep.signature[_FACE_COLOR_SLOT] and signature[_FACE_COLOR_SLOT]):
+                and prep.signature[0] == signature[0]
+                and prep.signature[1][:_FACE_COLOR_SLOT] == signature[1][:_FACE_COLOR_SLOT]
+                and prep.signature[1][_FACE_COLOR_SLOT + 1:] == signature[1][_FACE_COLOR_SLOT + 1:]
+                and prep.signature[1][_FACE_COLOR_SLOT] and signature[1][_FACE_COLOR_SLOT]):
             # Only the per-face colours changed (update_face_colors): keep the
             # world arrays, admission, section polygons, lines, points and
             # outlines, and rebuild just the colour list.

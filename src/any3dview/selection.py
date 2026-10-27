@@ -470,32 +470,24 @@ class ProjectedSelectionIndex:
         selection_filter: Optional[SelectionFilter] = None,
     ) -> Optional[int]:
         rect = (point[0] - radius, point[1] - radius, point[0] + radius, point[1] + radius)
-        candidates = []
-        for index in self._indices_for_rect(rect):
+        # Visit the deterministic front-to-back order first. Once a candidate
+        # covers this pixel, farther polygons cannot change the answer.
+        candidates = sorted(self._indices_for_rect(rect), key=lambda index: (
+            self.primitives[index].depth, -self.primitives[index].layer, -index))
+        for index in candidates:
             primitive = self.primitives[index]
-            if _primitive_distance(primitive, point) > radius:
+            x0, y0, x1, y1 = primitive.bbox
+            if point[0] < x0-radius or point[0] > x1+radius or point[1] < y0-radius or point[1] > y1+radius:
                 continue
-            # Surfaces are real occluders even when their owner is filtered
-            # out.  Filtered point/line annotations are selection-transparent,
-            # matching Tk's legacy behaviour where untagged overlays never
-            # steal a click from geometry behind them.
+            # Filtered point/line annotations are transparent; surfaces remain
+            # occluders even when their owners do not match the selection filter.
             if selection_filter is not None and primitive.shape != "polygon":
                 binding = primitive.binding
-                if binding is None or not any(
-                    selection_filter.accepts(owner) for owner in binding.owners
-                ):
+                if binding is None or not any(selection_filter.accepts(owner) for owner in binding.owners):
                     continue
-            candidates.append(index)
-        if not candidates:
-            return None
-        return min(
-            candidates,
-            key=lambda index: (
-                self.primitives[index].depth,
-                -self.primitives[index].layer,
-                -index,
-            ),
-        )
+            if _primitive_distance(primitive, point) <= radius:
+                return index
+        return None
 
     def point_hits(
         self,
@@ -592,6 +584,29 @@ class ProjectedSelectionIndex:
         )
         return (centroid,) + points + middles
 
+    @staticmethod
+    def _rectangle_samples(primitive: ProjectedPrimitive, rect: Rect) -> Tuple[Point2, ...]:
+        """Sample the portion of a line actually inside the gesture rectangle."""
+        if primitive.shape != "segment":
+            return ProjectedSelectionIndex._samples(primitive)
+        start, end = primitive.points
+        dx, dy = end[0]-start[0], end[1]-start[1]
+        low, high = 0.0, 1.0
+        for direction, distance in ((-dx,start[0]-rect[0]), (dx,rect[2]-start[0]),
+                                    (-dy,start[1]-rect[1]), (dy,rect[3]-start[1])):
+            if direction == 0:
+                if distance < 0:
+                    return ()
+                continue
+            fraction = distance/direction
+            if direction < 0:
+                low = max(low, fraction)
+            else:
+                high = min(high, fraction)
+            if low > high:
+                return ()
+        return tuple((start[0]+dx*t, start[1]+dy*t) for t in ((low+high)*0.5,low,high))
+
     def _owner_visible(
         self,
         owner_key: str,
@@ -601,7 +616,7 @@ class ProjectedSelectionIndex:
     ) -> bool:
         for index in indices:
             primitive = self.primitives[index]
-            for sample in self._samples(primitive):
+            for sample in self._rectangle_samples(primitive, rect):
                 if not _point_in_rect(sample, rect):
                     continue
                 front = self._front_primitive_at(

@@ -241,6 +241,11 @@ class _PainterHud:
         s=self.scale
         self.painter.setPen(QPen(QColor(color),width*s));self.painter.setBrush(Qt.NoBrush)
         self.painter.drawEllipse(QPointF(point[0]*s,point[1]*s),radius*s,radius*s)
+    def text_size(self,text,font=('Segoe UI',9,'')):
+        from PySide6.QtGui import QFontMetricsF
+        qfont=QFont(font[0],max(1,round(font[1]*self.scale)));qfont.setBold('bold' in font[2])
+        metrics=QFontMetricsF(qfont)
+        return metrics.horizontalAdvance(str(text))/self.scale,metrics.height()/self.scale
     def text(self,point,text,color,font=("Segoe UI",10,""),anchor="nw",**options):
         s=self.scale
         qfont=QFont(font[0],max(1,round(font[1]*s)));qfont.setBold("bold" in font[2])
@@ -271,6 +276,8 @@ class _InputSurface:
         self.setFocus()
         e = self._event(event)
         if event.button() == Qt.LeftButton:
+            gizmo=getattr(self.owner,'_section_gizmo',None)
+            if gizmo is not None and gizmo.press(e):event.accept();return
             self.owner._press_select(e)
         else:
             self.owner._press(e, "orbit" if event.button() == Qt.RightButton else "pan")
@@ -278,6 +285,8 @@ class _InputSurface:
 
     def mouseMoveEvent(self, event):
         e = self._event(event)
+        gizmo=getattr(self.owner,'_section_gizmo',None)
+        if gizmo is not None and gizmo.motion(e):event.accept();return
         if event.buttons() & Qt.LeftButton:
             self.owner._cancel_hover()
             self.owner._drag_select(e)
@@ -297,6 +306,8 @@ class _InputSurface:
         event.accept()
 
     def mouseReleaseEvent(self, event):
+        gizmo=getattr(self.owner,'_section_gizmo',None)
+        if gizmo is not None and gizmo.release():event.accept();return
         if event.button() == Qt.LeftButton:
             self.owner._release_select(self._event(event))
         else:
@@ -988,7 +999,7 @@ class QtViewer(RetainedViewer, QWidget):
             handle.generations,
             masks,
             tuple(int(value) for value in handle.selected_elements),
-            None if self._section_plane is None else self._section_plane.key,
+            None if self._effective_section is None else self._effective_section.key,
             self._highlight_fill,
             handle.appearance.scalar_range,
             id(handle.appearance.colormap),
@@ -1061,7 +1072,7 @@ class QtViewer(RetainedViewer, QWidget):
             for index,(a,b) in enumerate(mesh.lines):
                 if index in hidden_lines:continue
                 segment=(Point3D(*world[a]),Point3D(*world[b]))
-                if self._section_plane is not None:segment=self._section_plane.clip_segment(*segment)
+                if self._effective_section is not None:segment=self._effective_section.clip_segment(*segment)
                 if segment is None:continue
                 line_segments.append((segment[0].to_tuple(), segment[1].to_tuple()))
                 line_selected.append(index in selected_lines)
@@ -1071,7 +1082,7 @@ class QtViewer(RetainedViewer, QWidget):
             selected_points=set(mask.get("selected_points",()))
             for index,i in enumerate(mesh.point_indices):
                 if index in hidden_points:continue
-                if self._section_plane is not None and not self._section_plane.contains(world[i]):continue
+                if self._effective_section is not None and not self._effective_section.contains(world[i]):continue
                 points.append(int(i))
                 point_selected.append(index in selected_points)
         prep = _SoftwareChunkPrep(handle, signature, world, triangles, triangle_colors,
@@ -1124,7 +1135,7 @@ class QtViewer(RetainedViewer, QWidget):
         # in the frame; the retained preparation below removes the
         # camera-invariant per-primitive work from repeated frames.
         frame = _FrameProjection(self)
-        section = self._section_plane if self._section_plane is not None and self._section_plane.enabled else None
+        section = self._effective_section if self._effective_section is not None and self._effective_section.enabled else None
         faces, lines, points, outlines = [], [], [], []
         for entry in self._display_entries().values():
             handle = entry["handle"]
@@ -1255,11 +1266,24 @@ class QtViewerHostAdapter:
 
     def create_viewer(self, parent, *, backend, **options):
         diagnostics = []
+        gpu_api = os.environ.get("ANY3DVIEW_GPU_API", "").casefold()
+        if backend != "webgpu" and gpu_api not in {"", "opengl", "webgpu"}:
+            raise ValueError(f"unsupported ANY3DVIEW_GPU_API={gpu_api!r}")
         disabled = os.environ.get("ANY3DVIEW_DISABLE_GPU", "").casefold() in {"1","true","yes"}
+        if disabled and (backend == "webgpu" or gpu_api == "webgpu" and backend in {"auto", "gpu"}):
+            raise GPUUnavailableError("explicit WebGPU initialization disabled", diagnostics=("ANY3DVIEW_DISABLE_GPU is enabled",))
         if disabled:
             diagnostics.append("ANY3DVIEW_DISABLE_GPU is enabled")
             if backend == "gpu":
                 raise GPUUnavailableError("explicit GPU initialization disabled", diagnostics=tuple(diagnostics))
+        if not disabled and (backend == "webgpu" or backend in {"auto", "gpu"} and gpu_api == "webgpu"):
+            # Explicit experimental API opt-in never silently changes native API
+            # or falls back to CPU/OpenGL when admission fails.
+            try:
+                from .qt_webgpu import QtWebGPUViewer
+            except ImportError as error:
+                raise GPUUnavailableError("WebGPU dependencies unavailable; install ANY3dView[webgpu]",diagnostics=(str(error),)) from error
+            return QtWebGPUViewer(parent, **options)
         if backend in {"auto","gpu"} and not disabled:
             try:
                 viewer=QtViewer(parent, backend="gpu", **options)

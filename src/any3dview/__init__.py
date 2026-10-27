@@ -14,7 +14,7 @@ from .commands import (
     ViewerObservation,
     viewer_command_manifest,
 )
-from .clipping import SectionPlane
+from .clipping import SectionPlane, SectionBox, CutCap
 from .core import (
     Camera3D,
     DEFAULT_COLOR_STOPS,
@@ -88,6 +88,8 @@ __all__ = [
     "ProjectedPrimitive",
     "ProjectedSelectionIndex",
     "SectionPlane",
+    "SectionBox",
+    "CutCap",
     "SelectionConfig",
     "SelectionDepth",
     "SelectionEvent",

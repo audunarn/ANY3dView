@@ -40,3 +40,14 @@ def test_visible_and_through_region_policies_differ():
     )
     assert [hit.key for hit in visible] == ["front"]
     assert {hit.key for hit in through} == {"front", "back"}
+
+
+def test_visible_crossing_samples_clipped_segment_and_respects_occluder():
+    line = ProjectedPrimitive(0, "segment", ((0,50),(100,50)), (5,5), PickBinding.one("rim", "geometry.edge"))
+    filt = SelectionFilter(kinds=frozenset({"geometry.edge"}))
+    for primitives, expected in (([line], ["rim"]), ([line, square(1,"cover",2)], [])):
+        index = ProjectedSelectionIndex(primitives,100,100)
+        hits=index.rectangle_hits((20,49,30,51),filt,crossing=True,depth=SelectionDepth.VISIBLE)
+        assert [hit.key for hit in hits] == expected
+        assert not index.rectangle_hits((20,49,30,51),filt,crossing=False,depth=SelectionDepth.THROUGH)
+        assert [hit.key for hit in index.rectangle_hits((20,49,30,51),filt,crossing=True,depth=SelectionDepth.THROUGH)] == ["rim"]

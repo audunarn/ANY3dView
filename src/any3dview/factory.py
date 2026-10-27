@@ -22,8 +22,8 @@ def create_viewer(
     """
 
     requested = str(backend).casefold()
-    if requested not in {"auto", "gpu", "software"}:
-        raise ValueError("backend must be 'auto', 'gpu', or 'software'")
+    if requested not in {"auto", "gpu", "software", "webgpu"}:
+        raise ValueError("backend must be 'auto', 'gpu', 'software', or 'webgpu'")
     adapter = TkViewerHostAdapter() if host is None else host
     if not isinstance(adapter, ViewerHostAdapter):
         raise TypeError("host must implement ViewerHostAdapter")

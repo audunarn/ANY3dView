@@ -99,3 +99,36 @@ def test_replaced_ownership_does_not_keep_negative_cached_mask():
     handle.set_chunk_ownership("local", second)
     viewer._apply_highlight_masks()
     assert viewer._renderer.latest["selected_elements"].tolist() == [0, 1]
+
+
+@pytest.mark.parametrize("key", ["face:1",42])
+def test_mesh_mask_queries_only_present_application_keys(monkeypatch,key):
+    viewer=RetainedViewer.__new__(RetainedViewer)
+    viewer._hidden_primitives_for_visibility=lambda *args: np.empty(0,dtype=np.uint32)
+    table=table_for("triangle",[(ApplicationOwner(key),),(ApplicationOwner(key),)])
+    query=RetainedViewer._semantic_primitives_for_key
+    calls=[]
+    def counted(*args):
+        calls.append(args[3]);return query(*args)
+    monkeypatch.setattr(viewer,"_semantic_primitives_for_key",counted)
+    result=viewer._semantic_masks_for_mesh(mesh(),table,None,{},set(),{str(key),"absent"},None)
+    assert "absent" not in calls
+    assert result["selected_elements"].tolist()==[0,1]
+
+
+def test_mesh_mask_preserves_dynamic_model_resolver_keys():
+    viewer=RetainedViewer.__new__(RetainedViewer)
+    viewer._hidden_primitives_for_visibility=lambda *args: np.empty(0,dtype=np.uint32)
+    model=ModelOwner(UUID("3e0d7a91-e385-4905-885e-b5a554294e91"),"face",9)
+    table=table_for("triangle",[(model,),(model,)])
+    result=viewer._semantic_masks_for_mesh(mesh(),table,lambda *args:"dynamic",{},set(),{"dynamic"},None)
+    assert result["selected_elements"].tolist()==[0,1]
+
+
+@pytest.mark.parametrize("key",["042","+42"])
+def test_mesh_mask_retains_accepted_numeric_spelling(key):
+    viewer=RetainedViewer.__new__(RetainedViewer)
+    viewer._hidden_primitives_for_visibility=lambda *args: np.empty(0,dtype=np.uint32)
+    table=table_for("triangle",[(ApplicationOwner(42),),(ApplicationOwner(42),)])
+    result=viewer._semantic_masks_for_mesh(mesh(),table,None,{},set(),{key},None)
+    assert result["selected_elements"].tolist()==[0,1]

@@ -21,3 +21,12 @@ Widgets modules. PySide6's installed distribution supplies its notices and
 license texts. The alternative GPL route is not selected, and this notice does
 not authorize adding GPL-only Qt modules. A future bundled application installer
 requires a separate review of its LGPL notices and replacement/relinking route.
+
+The experimental `webgpu` extra installs wgpu-py 0.32.0, whose installed Python
+distribution supplies a BSD-2-Clause license. The original WGSL renderer here is
+ANY3dView code. wgpu-native is upstream MIT/Apache-2.0; its native distribution
+and transitive components require their own notices. These dependencies are not
+copied into ANY3dView source archives or wheels. This notice is not a complete
+native-wheel or bundled-application license audit. The optional Qt and Pillow
+terms above continue to apply. Rendercanvas 2.7.2 was investigated (installed
+BSD-2-Clause license) but is not used or required by this implementation.

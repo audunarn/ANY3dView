@@ -78,8 +78,16 @@ class ViewerState:
     # None preserves the receiving backend's settings for older callers.
     light: Optional[Light] = None
     selection_config: Optional[SelectionConfig] = None
+    section_box: object = None
+    contours: object = None
+    selection_outline: tuple = (True,False)
+    shadows: tuple = ("Off",.5)
+    cut_caps: tuple = (False,True)
+    present_method: str = "bitmap"
 
     def __post_init__(self) -> None:
+        from .clipping import SectionBox
+        if self.section_box is not None and not isinstance(self.section_box,SectionBox): raise TypeError('section_box must be SectionBox')
         if self.light is not None and not isinstance(self.light, Light):
             raise TypeError("light must be Light or None")
         if self.selection_config is not None and not isinstance(self.selection_config, SelectionConfig):
@@ -291,6 +299,9 @@ class ViewerBackend(Protocol):
 
     def clear_section_plane(self) -> None: ...
 
+    def set_section_box(self, center, half_extents, orientation=(0.,0.,0.,1.), enabled=True) -> None: ...
+    def clear_section_box(self) -> None: ...
+
     def set_camera_position(self, position: Point3D) -> None: ...
 
     def set_camera_target(self, target: Point3D) -> None: ...
@@ -374,6 +385,8 @@ class ViewerBackend(Protocol):
         anchor: str = "center",
         layer: int = 35,
         draw_overlay: bool = True,
+        callout: bool = False,
+        callout_key: str = "",
     ) -> None: ...
 
     def add_polygon(
@@ -743,3 +756,12 @@ class ViewerBackend(Protocol):
     def redraw(self) -> None: ...
 
     def destroy(self) -> None: ...
+
+
+class WebGPUDisplayControls(Protocol):
+    """Optional renderer controls, separate from the portable backend protocol."""
+    def set_contours(self, mode='Continuous', levels=(), zero_contour=False, threshold=None) -> None: ...
+    def set_selection_outline(self, enabled=True, through_geometry=False) -> None: ...
+    def set_shadows(self, quality='Off', strength=.5) -> None: ...
+    def set_cut_caps(self, enabled=True, hatch=True, provider=None) -> None: ...
+    def set_present_method(self, method='bitmap') -> None: ...

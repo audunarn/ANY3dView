@@ -403,6 +403,12 @@ class GPUHudRenderer:
         )
         self.polyline(points, color, width=width, closed=True, depth=depth)
 
+    def text_size(self,value,font=('Segoe UI',9,'')):
+        values=tuple(font);scale=self.scale
+        scaled=(values[0],max(6,round(values[1]*scale)),values[2])
+        entry=self.atlas.text(value,scaled)
+        return entry.width/scale,entry.height/scale
+
     def text(
         self,
         point: tuple[float, float],

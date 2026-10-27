@@ -104,4 +104,74 @@ class SectionPlane:
         return tuple(result)
 
 
-__all__ = ["SectionPlane"]
+
+
+@dataclass(frozen=True)
+class ClipIntersection:
+    """Intersection of normalized world half spaces (render and query contract)."""
+    planes: tuple[SectionPlane, ...]
+
+    @property
+    def enabled(self): return any(p.enabled for p in self.planes)
+    @property
+    def key(self): return tuple(p.key for p in self.planes if p.enabled)
+    def contains(self, point, *, tolerance=1e-9):
+        return all(p.contains(point, tolerance=tolerance) for p in self.planes)
+    def clip_polygon(self, points):
+        for plane in self.planes:
+            points=plane.clip_polygon(points)
+            if not len(points): break
+        return tuple(points)
+    def clip_segment(self, start, end):
+        segment=(start,end)
+        for plane in self.planes:
+            segment=plane.clip_segment(*segment)
+            if segment is None: return None
+        return segment
+
+@dataclass(frozen=True)
+class SectionBox:
+    """Oriented visual section box; quaternion order is x,y,z,w."""
+    center: Point3D
+    half_extents: Point3D
+    orientation: tuple = (0.,0.,0.,1.)
+    enabled: bool = True
+
+    def __post_init__(self):
+        center,extents=as_point(self.center),as_point(self.half_extents)
+        q=tuple(float(v) for v in self.orientation)
+        if len(q)!=4 or not all(math.isfinite(v) for v in (*center.to_tuple(),*extents.to_tuple(),*q)):
+            raise ValueError('section box requires finite center, extents and xyzw quaternion')
+        if min(extents.to_tuple())<=0: raise ValueError('section box half extents must be positive')
+        length=math.hypot(*q)
+        if length<=1e-15: raise ValueError('section box quaternion cannot be zero')
+        object.__setattr__(self,'center',center);object.__setattr__(self,'half_extents',extents)
+        object.__setattr__(self,'orientation',tuple(v/length for v in q))
+        object.__setattr__(self,'enabled',bool(self.enabled))
+
+    @property
+    def planes(self):
+        x,y,z,w=self.orientation
+        axes=((1-2*(y*y+z*z),2*(x*y+z*w),2*(x*z-y*w)),
+              (2*(x*y-z*w),1-2*(x*x+z*z),2*(y*z+x*w)),
+              (2*(x*z+y*w),2*(y*z-x*w),1-2*(x*x+y*y)))
+        return tuple(SectionPlane(as_point(axis)*sign,as_point(axis).dot(self.center)*sign-extent,self.enabled)
+                     for axis,extent in zip(axes,self.half_extents.to_tuple()) for sign in (1.,-1.))
+    @property
+    def key(self): return (*self.center.to_tuple(),*self.half_extents.to_tuple(),*self.orientation,self.enabled)
+    def contains(self, point, **kwargs): return ClipIntersection(self.planes).contains(point,**kwargs)
+    def clip_polygon(self, points): return ClipIntersection(self.planes).clip_polygon(points)
+    def clip_segment(self, start,end): return ClipIntersection(self.planes).clip_segment(start,end)
+
+__all__=['SectionPlane','SectionBox','ClipIntersection','CutCap']
+
+@dataclass(frozen=True)
+class CutCap:
+    """Owner-qualified neutral display cap, never inferred solid/scalar truth.
+
+    An installed provider certifies that its source is a supported closed volume.
+    ``owners`` uses the existing MeshArrays semantic-owner registration contract.
+    """
+    mesh: object
+    source_handle: object
+    owners: object

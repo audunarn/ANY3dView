@@ -258,6 +258,60 @@ def _picking_generations(generations) -> tuple[int, ...]:
     )
 
 
+
+def _grouped_polygon_boundaries(points, faces, groups):
+    """Display identity only: cancel exact shared edges within declared groups."""
+    _, identities = np.unique(points, axis=0, return_inverse=True)
+    edges = {}
+    for face, group in zip(faces, groups):
+        if len(face) < 3:
+            continue
+        for a,b in zip(face, (*face[1:],face[0])):
+            ia,ib=int(identities[a]),int(identities[b])
+            key=(int(group),min(ia,ib),max(ia,ib))
+            edges.setdefault(key,[]).append((a,b))
+    boundary=[values[0] for values in edges.values() if len(values)!=2]
+    return identities.astype(np.uint32), np.asarray(boundary,dtype=np.uint32).reshape((-1,2))
+
+
+class AnnotationGroup:
+    """A removable lifetime for meshes and text added inside its context.
+
+    The group owns only newly submitted annotations; removing it is idempotent
+    and never clears pre-existing scene contents. It is not a scene snapshot.
+    """
+    def __init__(self, viewer):
+        self.viewer = viewer
+        self.handles = []
+        self._texts = []
+        self.removed = False
+
+    def __enter__(self):
+        if self.removed:
+            raise RuntimeError("removed annotation group cannot be reused")
+        self.viewer._annotation_groups.append(self)
+        return self
+
+    def __exit__(self, kind, value, traceback):
+        self.viewer._annotation_groups.pop()
+        if kind is not None:
+            self.remove()
+        return False
+
+    def remove(self):
+        if self.removed:
+            return
+        self.removed = True
+        for handle in self.handles:
+            if not handle.removed:
+                handle.remove()
+        identities = {id(text) for text in self._texts}
+        self.viewer._world_text[:] = [text for text in self.viewer._world_text if id(text) not in identities]
+        self.handles.clear()
+        self._texts.clear()
+        self.viewer.redraw()
+
+
 class RetainedViewer:
 
     """Shared retained scene, camera and interaction behavior; hosts provide scheduling."""
@@ -279,6 +333,7 @@ class RetainedViewer:
         self._thickness_legend: Optional[dict[str, Any]] = None
         self._world_text: list[dict[str, Any]] = []
         self._section_plane: Optional[SectionPlane] = None
+        self._section_box = None
         self._entries: dict[int, dict[str, Any]] = {}
         self._selection_callback: Optional[Callable[[SelectionEvent], None]] = None
         self._selection_hover_callback: Optional[Callable[[Optional[SelectionHit]], None]] = None
@@ -418,6 +473,12 @@ class RetainedViewer:
             near=float(camera.near),
             far=float(camera.far),
             section_plane=plane_copy,
+            section_box=getattr(self,"_section_box",None),
+            contours=getattr(self,"_contours",None),
+            selection_outline=getattr(self,"_selection_outline",(True,False)),
+            shadows=getattr(self,"_shadows",("Off",.5)),
+            cut_caps=getattr(self,"_cut_caps",(False,True)),
+            present_method=getattr(self,"_present_method","bitmap"),
             background=self.bg,
             shading_enabled=self._shading_enabled,
             occlude_lines=self._occlude_lines,
@@ -452,6 +513,7 @@ class RetainedViewer:
         self.camera.set_target(as_point(state.camera_target))
         self.camera.set_position(as_point(state.camera_position))
         self._section_plane = state.section_plane
+        self._section_box = state.section_box
         self.bg = str(state.background)
         self._shading_enabled = bool(state.shading_enabled)
         self._occlude_lines = bool(state.occlude_lines)
@@ -715,6 +777,8 @@ class RetainedViewer:
 
 
     def _cancel_interaction(self, _event: Optional[object] = None) -> None:
+        gizmo=getattr(self,"_section_gizmo",None)
+        if gizmo is not None:gizmo.cancel()
         visible_interaction = bool(self._drag or self._selection_dragging)
         self._drag = ""
         self._selection_press = None
@@ -1164,6 +1228,21 @@ class RetainedViewer:
             "elements": [], "lines": [], "points": [],
         }
         if isinstance(table, PackedOwnerTable):
+            # Pure application tables have an exact, bounded public-key set.
+            # Model-domain rows may resolve dynamically, so keep their full
+            # selected-key path. Compute per call to follow semantic updates.
+            mesh_selected_keys = selected_keys
+            if not np.any(table.domains == 0):
+                available_keys = set(table.string_keys)
+                numeric_rows = (table.domains == 1) & (table.string_slots == np.iinfo(np.uint32).max)
+                numeric_keys = {int(value) for value in table.numeric_ids[numeric_rows]}
+                mesh_selected_keys = selected_keys & available_keys
+                for key in selected_keys - mesh_selected_keys:
+                    try:
+                        if int(key) in numeric_keys:
+                            mesh_selected_keys.add(key)
+                    except (TypeError, ValueError):
+                        pass
             for primitive_kind, suffix in (
                 ("triangle", "elements"),
                 ("line", "lines"),
@@ -1171,7 +1250,7 @@ class RetainedViewer:
             ):
                 semantic = cache.setdefault(f"semantic_{suffix}", {})
                 hit_values = cache.setdefault(f"hit_{suffix}", {})
-                for key in selected_keys:
+                for key in mesh_selected_keys:
                     values = semantic.get(key)
                     if values is None:
                         values = self._semantic_primitives_for_key(
@@ -1572,7 +1651,7 @@ class RetainedViewer:
             camera.far,
             getattr(self, "show_mesh_lines", True),
             getattr(self, "_occlude_lines", True),
-            None if self._section_plane is None else self._section_plane.key,
+            None if self._effective_section is None else self._effective_section.key,
             getattr(self, "_visibility_state", VisibilityState()),
             tuple(
                 (
@@ -1603,7 +1682,7 @@ class RetainedViewer:
         origin = np.asarray(self.camera.position.to_tuple(), dtype=np.float64)
         scale = 0.5 * height / math.tan(self.camera.fov * 0.5)
         near, far = float(self.camera.near), float(self.camera.far)
-        plane = self._section_plane
+        plane = self._effective_section
         projected: list[ProjectedPrimitive] = []
         primitive_id = 0
 
@@ -1841,7 +1920,7 @@ class RetainedViewer:
         while remaining_kinds:
             picker = getattr(renderer, "pick_detail", renderer.pick)
             picked = picker(
-                int(x), int(y), self.camera, viewport, self._section_plane,
+                int(x), int(y), self.camera, viewport, self._effective_section,
                 show_mesh_lines=self.show_mesh_lines,
                 occlude_lines=self._occlude_lines,
                 radius=radius,
@@ -2404,6 +2483,9 @@ class RetainedViewer:
             raise
         self.redraw()
         self._selection_index = None
+        groups = getattr(self, "_annotation_groups", ())
+        for group in groups:
+            group.handles.append(handle)
         return handle
 
 
@@ -2453,6 +2535,7 @@ class RetainedViewer:
         back_color: str = "",
         face_colors: Optional[Sequence[str]] = None,
         smooth_angle: Optional[float] = None,
+        polygon_groups=None,
     ) -> None:
         # Numeric polygon batches already contain coordinates. Avoid allocating
         # a Point3D and tuple per vertex; retain the legacy coercion for None,
@@ -2494,7 +2577,7 @@ class RetainedViewer:
             face_color = None if face_colors is None else face_colors[face_index]
             for index in range(1, len(face) - 1):
                 triangles.append((face[0], face[index], face[index + 1]))
-                outline_groups.append(face_index)
+                outline_groups.append(face_index if polygon_groups is None else polygon_groups[face_index])
                 triangle_bindings.append(binding)
                 if face_color is not None:
                     triangle_colors.append(str(face_color))
@@ -2518,10 +2601,17 @@ class RetainedViewer:
         triangle_array = np.asarray(triangles, np.uint32).reshape((-1, 3))
         normals = None
         outline_vertex_ids=None
+        if polygon_groups is not None:
+            outline_vertex_ids, grouped_lines = _grouped_polygon_boundaries(points,face_values,polygon_groups)
+            if outline:
+                lines = grouped_lines
         if smooth_angle is not None and len(triangle_array):
+            original_ids = outline_vertex_ids
             points, triangle_array, normals, lines, outline_vertex_ids = _expand_surface_normals(
                 points, triangle_array, float(smooth_angle), lines
             )
+            if original_ids is not None:
+                outline_vertex_ids = original_ids[outline_vertex_ids]
         arrays = MeshArrays(points, triangle_array, lines=lines, normals=normals)
         owners = None
         if any(binding is not None for binding in triangle_bindings):
@@ -2579,6 +2669,12 @@ class RetainedViewer:
         )
 
 
+    def annotation_group(self) -> AnnotationGroup:
+        """Capture newly added meshes/text for independent later removal."""
+        if not hasattr(self, "_annotation_groups"):
+            self._annotation_groups = []
+        return AnnotationGroup(self)
+
     def add_text(
         self,
         point: Point3D,
@@ -2588,12 +2684,18 @@ class RetainedViewer:
         anchor: str = "center",
         layer: int = 35,
         draw_overlay: bool = True,
+        callout: bool = False,
+        callout_key: str = '',
     ) -> None:
-        self._world_text.append({
+        value = {
             "point": as_point(point), "text": str(text), "color": str(color),
             "font": font, "anchor": str(anchor), "layer": int(layer),
             "draw_overlay": bool(draw_overlay),
-        })
+            "callout": bool(callout), "callout_key": str(callout_key),
+        }
+        self._world_text.append(value)
+        for group in getattr(self, "_annotation_groups", ()):
+            group._texts.append(value)
         self.redraw()
 
 
@@ -2626,7 +2728,7 @@ class RetainedViewer:
     def _numeric_face_batch(
         self, polygons, *, color, outline, width, layer, cull_backface,
         opacity, stipple, tags, lit, two_sided_shell, bindings,
-        back_color="", face_colors=None, smooth_angle=None,
+        back_color="", face_colors=None, smooth_angle=None, polygon_groups=None,
     ):
         """Pack disjoint numeric polygons in the legacy fan/outline order.
 
@@ -2670,9 +2772,17 @@ class RetainedViewer:
             lines = np.column_stack((left, right)).astype(np.uint32)
         normals = None
         outline_vertex_ids=None
+        if polygon_groups is not None:
+            faces = [tuple(range(int(offsets[i]),int(offsets[i+1]))) for i in range(len(sizes))]
+            outline_vertex_ids, grouped_lines = _grouped_polygon_boundaries(points,faces,polygon_groups)
+            if outline:
+                lines = grouped_lines
         if smooth_angle is not None:
+            original_ids = outline_vertex_ids
             points, triangles, normals, lines, outline_vertex_ids = _expand_surface_normals(
                 points, triangles, float(smooth_angle), lines)
+            if original_ids is not None:
+                outline_vertex_ids = original_ids[outline_vertex_ids]
         arrays = MeshArrays(points, triangles, lines=lines, normals=normals)
         active = np.flatnonzero(repetitions)
         active_bindings = [bindings[int(index)] for index in active]
@@ -2692,7 +2802,7 @@ class RetainedViewer:
             two_sided_shell=effective_two_sided, owners=owners,
             line_color=outline or color, line_width=width, back_color=back_color,
             face_colors=colors, _mesh_outline=bool(outline),
-            _outline_groups=face_indices,
+            _outline_groups=face_indices if polygon_groups is None else np.asarray(polygon_groups,dtype=np.uint32)[face_indices],
             _outline_vertex_ids=outline_vertex_ids,
         )
         return True
@@ -2714,6 +2824,7 @@ class RetainedViewer:
         two_sided_shell: bool = False,
         bindings: object = None,
         smooth_angle: Optional[float] = None,
+        outline_groups: Optional[Sequence[object]] = None,
     ) -> None:
         """Add polygons as retained triangle batches.
 
@@ -2721,6 +2832,12 @@ class RetainedViewer:
         normals wherever their faces differ by no more than that crease angle,
         so tessellated curved surfaces look curved while hard edges stay hard.
         ``None`` keeps flat per-triangle shading.
+
+        ``outline_groups`` optionally supplies one hashable display-surface
+        label per polygon. Exact coincident display vertices in the same group
+        share outline identity, hiding artificial subdivision edges in normal
+        drawing and selection highlights. Geometry arrays and pick ownership
+        remain unchanged. Omitting it retains individual polygon boundaries.
         """
 
         polygon_values = [
@@ -2734,6 +2851,16 @@ class RetainedViewer:
         total = len(polygon_values)
         if total == 0:
             return
+        group_values = None
+        if outline_groups is not None:
+            labels = list(outline_groups)
+            if len(labels) != total:
+                raise ValueError("outline_groups must have one label per polygon")
+            ordinals = {}
+            try:
+                group_values = [ordinals.setdefault(label,len(ordinals)) for label in labels]
+            except TypeError:
+                raise TypeError("outline_groups labels must be hashable") from None
         color_values = [str(colors)] * total if isinstance(colors, str) else [str(v) for v in colors]  # type: ignore[union-attr]
         if len(color_values) != total:
             raise ValueError(f"colors has {len(color_values)} entries for {total} faces")
@@ -2758,7 +2885,7 @@ class RetainedViewer:
                 layer=layer, cull_backface=cull_backface, opacity=opacity,
                 stipple=stipple, tags=tags, lit=lit, two_sided_shell=two_sided_shell,
                 bindings=binding_values, back_color=back_values[0],
-                face_colors=color_values, smooth_angle=smooth_angle,
+                face_colors=color_values, smooth_angle=smooth_angle, polygon_groups=group_values,
             ):
                 return
             vertices: list[object] = []
@@ -2775,7 +2902,7 @@ class RetainedViewer:
                     stipple=stipple, tags=tags, lit=lit,
                     two_sided_shell=two_sided_shell, bindings=binding_values,
                     back_color=back_values[0], face_colors=color_values,
-                    smooth_angle=smooth_angle,
+                    smooth_angle=smooth_angle, polygon_groups=group_values,
                 )
             return
         groups: dict[tuple[str, str], list[int]] = {}
@@ -2789,6 +2916,7 @@ class RetainedViewer:
                 stipple=stipple, tags=tags, lit=lit, two_sided_shell=two_sided_shell,
                 bindings=[binding_values[index] for index in indices],
                 back_color=back, smooth_angle=smooth_angle,
+                polygon_groups=None if group_values is None else [group_values[index] for index in indices],
             ):
                 continue
             vertices: list[object] = []
@@ -2806,6 +2934,7 @@ class RetainedViewer:
                 stipple=stipple, tags=tags, lit=lit,
                 two_sided_shell=two_sided_shell, bindings=group_bindings,
                 back_color=back, smooth_angle=smooth_angle,
+                polygon_groups=None if group_values is None else [group_values[index] for index in indices],
             )
 
 
@@ -3316,6 +3445,34 @@ class RetainedViewer:
             )
 
 
+    @property
+    def section_box(self): return getattr(self,"_section_box",None)
+
+    @property
+    def _effective_section(self):
+        from .clipping import ClipIntersection
+        planes=[]
+        if self._section_plane is not None and self._section_plane.enabled: planes.append(self._section_plane)
+        box=getattr(self,"_section_box",None)
+        if box is not None and box.enabled: planes.extend(box.planes)
+        return ClipIntersection(tuple(planes)) if planes else None
+
+    def set_section_box(self, center, half_extents, orientation=(0.,0.,0.,1.), enabled=True):
+        from .clipping import SectionBox
+        if getattr(self,'_backend',None) not in ('webgpu','software',None):
+            raise NotImplementedError('oriented section box requires software or WebGPU backend')
+        box=SectionBox(center,half_extents,orientation,enabled)
+        self._section_box=box
+        self._renderer.pick_dirty=True
+        self._selection_index=None
+        self.redraw()
+
+    def clear_section_box(self):
+        self._section_box=None
+        self._renderer.pick_dirty=True
+        self._selection_index=None
+        self.redraw()
+
     def set_section_plane(
         self,
         normal: object = (1.0, 0.0, 0.0),
@@ -3396,7 +3553,19 @@ class RetainedViewer:
                 if mesh.displacements is not None and handle.deformation_scale:
                     positions = positions + handle.deformation_scale * mesh.displacements
                 transform = handle.transform
-                values.append(positions @ transform[:3, :3].T + transform[:3, 3])
+                world=positions @ transform[:3, :3].T + transform[:3, 3]
+                section=self._effective_section
+                if section is None:values.append(world)
+                else:
+                    clipped=[]
+                    for triangle in mesh.triangles:
+                        clipped.extend(p.to_tuple() for p in section.clip_polygon(world[triangle]))
+                    for line in (() if mesh.lines is None else mesh.lines):
+                        segment=section.clip_segment(*world[line])
+                        if segment is not None:clipped.extend(p.to_tuple() for p in segment)
+                    for node in (() if mesh.point_indices is None else mesh.point_indices):
+                        if section.contains(world[node]):clipped.append(world[node])
+                    if clipped:values.append(np.asarray(clipped))
         if not values or not any(len(value) for value in values):
             return None
         positions = np.concatenate([value for value in values if len(value)])
@@ -3831,8 +4000,8 @@ class RetainedViewer:
 
     def _project_surface_outline(self, world, loop):
         polygon = world[list(loop)]
-        if self._section_plane is not None and self._section_plane.enabled:
-            polygon = np.asarray([point.to_tuple() for point in self._section_plane.clip_polygon(polygon)]).reshape((-1, 3))
+        if self._effective_section is not None and self._effective_section.enabled:
+            polygon = np.asarray([point.to_tuple() for point in self._effective_section.clip_polygon(polygon)]).reshape((-1, 3))
         right, up, forward = self.camera.basis()
         basis = np.asarray((right.to_tuple(), up.to_tuple(), forward.to_tuple()))
         camera_polygon = (polygon - np.asarray(self.camera.position.to_tuple())) @ basis.T
@@ -3846,8 +4015,8 @@ class RetainedViewer:
     def _project_outline_segment(self, segment, frame=None):
         if frame is None:
             frame = _FrameProjection(self)
-        if self._section_plane is not None:
-            segment = self._section_plane.clip_segment(*segment)
+        if self._effective_section is not None:
+            segment = self._effective_section.clip_segment(*segment)
             if segment is None:
                 return ()
             segment = np.asarray([point.to_tuple() for point in segment])
@@ -3879,7 +4048,7 @@ class RetainedViewer:
             frame = _FrameProjection(self)
         groups = self._outline_groups(entry, chunk_id, mesh)
         depths = (np.asarray(world) - frame.origin) @ frame.forward
-        plane = self._section_plane
+        plane = self._effective_section
         if (depths.size and depths.min() > frame.near and depths.max() < frame.far
                 and (plane is None or not plane.enabled)):
             # Preserve the same semantic boundary loops; only projection is
@@ -3928,13 +4097,14 @@ class RetainedViewer:
             (frame.far, bool(depths.size) and depths.max() >= frame.far)) if crosses]
         for triangle in triangles:
             polygon = world[mesh.triangles[triangle]]
-            plane = self._section_plane
+            plane = self._effective_section
             if plane is not None and plane.enabled:
-                section = cut(polygon, np.asarray([plane.signed_distance(point) for point in polygon]))
-                if len(section):
-                    points = self._project_outline_segment(section, frame)
-                    if points:
-                        yield points
+                for part in plane.planes:
+                    section = cut(polygon, np.asarray([part.signed_distance(point) for point in polygon]))
+                    if len(section):
+                        points = self._project_outline_segment(section, frame)
+                        if points:
+                            yield points
                 polygon = np.asarray([point.to_tuple() for point in plane.clip_polygon(polygon)]).reshape((-1, 3))
             for limit in limits:
                 section = cut(polygon, (polygon - frame.origin) @ frame.forward - limit)
@@ -4006,8 +4176,9 @@ class RetainedViewer:
             if projected is None:
                 return None
             return (projected[0] / ratio, projected[1] / ratio, projected[2])
+        callouts=[]
         for value in sorted(self._world_text, key=lambda item: item["layer"]):
-            plane = self._section_plane
+            plane = self._effective_section
             if plane is not None and plane.enabled and not plane.contains(value["point"]):
                 continue
             projected = project(value["point"])
@@ -4021,10 +4192,17 @@ class RetainedViewer:
                         - far * near / ((far - near) * camera_depth)
                         - 1.0e-5
                     )
-                hud.text(
-                    projected[:2], value["text"], value["color"],
-                    font=value["font"], anchor=value["anchor"], depth=text_depth,
-                )
+                if value.get('callout',False):
+                    key=value.get('callout_key') or repr((value['point'].to_tuple(),value['text']))
+                    callouts.append({'key':key,'text':value['text'],'anchor':projected[:2],
+                                     'font':value['font'],'depth':text_depth})
+                else:
+                    hud.text(
+                        projected[:2], value["text"], value["color"],
+                        font=value["font"], anchor=value["anchor"], depth=text_depth,
+                    )
+        from .callouts import draw_callouts
+        self._callout_placements,self._callout_omitted=draw_callouts(hud,callouts,width,height)
 
         if self._show_axis_indicator and width >= 95 and height >= 95:
             right, up, _forward = self.camera.basis()
@@ -4147,7 +4325,7 @@ class RetainedViewer:
         # Screen-space custom outlines are bounded to small legacy scenes so
         # orbiting a million-triangle mesh never projects elements in Python.
         if (
-            active
+            active and getattr(self,'_backend',None)!='webgpu'
             # Semantic selection already has retained GPU masks.  The legacy
             # screen-space outline remains useful while stationary, but
             # rebuilding its projected primitive index for every changed
@@ -4204,6 +4382,8 @@ class RetainedViewer:
                 hud.rectangle((*start, *current), color, width=2.0,
                               fill=fill, fill_alpha=0.22)
 
+        gizmo=getattr(self,"_section_gizmo",None)
+        if gizmo is not None:gizmo.draw(hud)
         if target is None:
             hud.render()
         else:

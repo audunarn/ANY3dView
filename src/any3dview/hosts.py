@@ -49,6 +49,9 @@ class TkViewerHostAdapter:
         backend: str,
         **options: Any,
     ) -> object:
+        if backend == "webgpu":
+            raise GPUUnavailableError("WebGPU requires the Qt host; Tk does not support backend='webgpu'",
+                diagnostics=("use QtViewerHostAdapter with ANY3dView[webgpu]",))
         diagnostics: list[str] = []
         disabled = os.environ.get("ANY3DVIEW_DISABLE_GPU", "").casefold() in {
             "1",

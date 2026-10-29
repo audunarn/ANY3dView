@@ -467,7 +467,10 @@ class WebGPURenderer:
                     edge_masks=np.zeros(len(indices),dtype=np.uint32)
                     selected_rows=np.flatnonzero(visible & selected)
                     if len(selected_rows):
-                        triangles=indices[selected_rows]
+                        # Flat/smooth shading can split coincident display vertices.
+                        # Outline geometric boundaries, not those storage seams.
+                        _,outline_vertices=np.unique(mesh.positions,axis=0,return_inverse=True)
+                        triangles=outline_vertices[indices[selected_rows]]
                         edges=np.sort(triangles[:,[[1,2],[2,0],[0,1]]].reshape(-1,2),axis=1)
                         _,inverse,counts=np.unique(edges,axis=0,return_inverse=True,return_counts=True)
                         boundary=(counts[inverse]!=2).reshape(-1,3)

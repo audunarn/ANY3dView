@@ -70,14 +70,21 @@ def create_native_surface(owner):
         def __init__(self):
             self.owner=owner
             super().__init__(parent=owner,update_mode='manual',present_method='screen')
-            self.gpu=owner._webgpu
-            self.context=self.get_context('wgpu')
-            self.format=self.context.get_preferred_format(self.gpu.adapter)
-            self.context.configure(device=self.gpu.device,format=self.format)
-            shader=self.gpu.device.create_shader_module(code=presentation_shader(self.format))
-            self.pipeline=self.gpu.device.create_render_pipeline(layout='auto',vertex={'module':shader,'entry_point':'vs'},fragment={'module':shader,'entry_point':'fs','targets':[{'format':self.format}]})
-            self.hud_texture=None;self.hud_size=None;self.presented_frames=0
-            self.request_draw(self.draw_frame)
+            self._released=False
+            try:
+                self.gpu=owner._webgpu
+                self.context=self.get_context('wgpu')
+                self.format=self.context.get_preferred_format(self.gpu.adapter)
+                self.context.configure(device=self.gpu.device,format=self.format)
+                shader=self.gpu.device.create_shader_module(code=presentation_shader(self.format))
+                self.pipeline=self.gpu.device.create_render_pipeline(layout='auto',vertex={'module':shader,'entry_point':'vs'},fragment={'module':shader,'entry_point':'fs','targets':[{'format':self.format}]})
+                self.hud_texture=None;self.hud_size=None;self.presented_frames=0
+                self.request_draw(self.draw_frame)
+            except BaseException:
+                self._released=True
+                self.close()
+                self.deleteLater()
+                raise
 
         def _rc_get_present_info(self,methods):
             return super()._rc_get_present_info(['screen']) if 'screen' in methods else None
@@ -87,7 +94,7 @@ def create_native_surface(owner):
             else: super().update(*args)
 
         def draw_frame(self):
-            if owner._closed:return
+            if owner._closed or self._released:return
             try:
                 owner._sync_pixel_ratio()
                 texture=owner._render_pixels(readback=False)
@@ -106,9 +113,16 @@ def create_native_surface(owner):
                 self.gpu.device.queue.submit([encoder.finish()]);self.presented_frames+=1
             except Exception as error:
                 owner._present_error=f'{type(error).__name__}: {error}'
-                QTimer.singleShot(0,lambda: owner.set_present_method('bitmap'))
+                QTimer.singleShot(0,owner,lambda: not owner._closed and not self._released and owner.set_present_method('bitmap'))
 
         def release(self):
-            if self.hud_texture is not None:self.hud_texture.destroy();self.hud_texture=None
-            self.context.unconfigure()
+            if self._released:return
+            self._released=True
+            try:
+                if self.hud_texture is not None:self.hud_texture.destroy();self.hud_texture=None
+            finally:
+                # BaseRenderCanvas.close tears down its context/events and marks
+                # the Qt canvas closed before its parent schedules deletion.
+                self.close()
+
     return NativeSurface()

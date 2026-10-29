@@ -421,6 +421,13 @@ class ProjectedSelectionIndex:
         self._owners: Dict[str, List[int]] = {}
         self._owner_values: Dict[str, PickOwner] = {}
         self._build()
+        # Projected primitives are immutable for this index. Reuse their
+        # deterministic occlusion order across all visibility sample pixels.
+        self._front_keys = tuple((p.depth, -p.layer, -index)
+                                 for index, p in enumerate(self.primitives))
+        self._front_global = tuple(sorted(self._global, key=self._front_keys.__getitem__))
+        self._front_tiles = {cell: tuple(sorted(indices, key=self._front_keys.__getitem__))
+                             for cell, indices in self._tiles.items()}
 
     def _build(self) -> None:
         max_x = max(0, (self.width - 1) // self.tile_size)
@@ -447,16 +454,23 @@ class ProjectedSelectionIndex:
                 for cell_x in range(low_x, high_x + 1):
                     self._tiles.setdefault((cell_x, cell_y), []).append(index)
 
-    def _indices_for_rect(self, rect: Rect) -> List[int]:
+    def _tile_range(self, rect: Rect):
         x0, y0, x1, y1 = _rect_normalized(rect)
         if x1 < 0 or y1 < 0 or x0 > self.width or y0 > self.height:
-            return []
+            return None
         max_x = max(0, (self.width - 1) // self.tile_size)
         max_y = max(0, (self.height - 1) // self.tile_size)
         low_x = max(0, min(max_x, math.floor(x0 / self.tile_size)))
         high_x = max(0, min(max_x, math.floor(x1 / self.tile_size)))
         low_y = max(0, min(max_y, math.floor(y0 / self.tile_size)))
         high_y = max(0, min(max_y, math.floor(y1 / self.tile_size)))
+        return low_x, high_x, low_y, high_y
+
+    def _indices_for_rect(self, rect: Rect) -> List[int]:
+        cells = self._tile_range(rect)
+        if cells is None:
+            return []
+        low_x, high_x, low_y, high_y = cells
         found = set(self._global)
         for cell_y in range(low_y, high_y + 1):
             for cell_x in range(low_x, high_x + 1):
@@ -472,9 +486,21 @@ class ProjectedSelectionIndex:
         rect = (point[0] - radius, point[1] - radius, point[0] + radius, point[1] + radius)
         # Visit the deterministic front-to-back order first. Once a candidate
         # covers this pixel, farther polygons cannot change the answer.
-        candidates = sorted(self._indices_for_rect(rect), key=lambda index: (
-            self.primitives[index].depth, -self.primitives[index].layer, -index))
+        cells = self._tile_range(rect)
+        if cells is None:
+            return None
+        low_x, high_x, low_y, high_y = cells
+        from heapq import merge
+        streams = [self._front_global]
+        streams.extend(self._front_tiles.get((x, y), ())
+                       for y in range(low_y, high_y+1)
+                       for x in range(low_x, high_x+1))
+        candidates = merge(*streams, key=self._front_keys.__getitem__)
+        seen = set()
         for index in candidates:
+            if index in seen:
+                continue
+            seen.add(index)
             primitive = self.primitives[index]
             x0, y0, x1, y1 = primitive.bbox
             if point[0] < x0-radius or point[0] > x1+radius or point[1] < y0-radius or point[1] > y1+radius:

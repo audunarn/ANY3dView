@@ -84,6 +84,8 @@ GPU_CAPABILITIES = ViewerCapabilities(
     face_color_update=True,
 )
 
+_DEFAULT_VISIBILITY = VisibilityState()
+
 
 def _surface_outline_loops(mesh, triangles, groups=None, vertex_ids=None):
     """Recover boundaries from indexed topology, never coordinates or owner tags.
@@ -666,7 +668,9 @@ class RetainedViewer:
 
 
     def _semantic_binding_visible(self, binding: Optional[PickBinding]) -> bool:
-        state = getattr(self, "_visibility_state", VisibilityState())
+        # Called once per projected primitive: do not build a default state
+        # per call (a getattr default is evaluated even when unused).
+        state = getattr(self, "_visibility_state", None) or _DEFAULT_VISIBILITY
         if state.is_default:
             return True
         return state.accepts(() if binding is None else binding.owners)
@@ -1920,9 +1924,16 @@ class RetainedViewer:
                             )
                         )
                         primitive_id += 1
-        self._selection_index = ProjectedSelectionIndex(projected, width, height)
+        self._selection_index = self._make_selection_index(projected, width, height)
         self._selection_index_key = key
         return self._selection_index
+
+
+    def _make_selection_index(
+        self, projected: list[ProjectedPrimitive], width: int, height: int
+    ) -> ProjectedSelectionIndex:
+        """Index the projected primitives; backends may adjust them first."""
+        return ProjectedSelectionIndex(projected, width, height)
 
 
     def _gpu_point_hits(

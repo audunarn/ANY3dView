@@ -8,8 +8,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from heapq import merge
 import math
-from typing import Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
+from itertools import islice
+from typing import Callable, Dict, FrozenSet, Iterable, Iterator, List, Optional, Sequence, Tuple
+
+import numpy as np
 
 
 Point2 = Tuple[float, float]
@@ -401,6 +405,33 @@ def _primitive_crosses_polygon(
     )
 
 
+def _float_exact(value: object) -> bool:
+    """True when ``value`` is a plain Python number exact in float64.
+
+    The screened front query runs only on plain Python floats and integers
+    up to 2**53: their scalar arithmetic and comparisons are the float64
+    arithmetic the vectorised screen uses.  Any other numeric type (numpy
+    scalars of any precision, bools, decimals) keeps the scalar query.
+    """
+    kind = type(value)
+    if kind is float:
+        return True
+    if kind is int:
+        return -(2 ** 53) <= value <= 2 ** 53
+    return False
+
+
+def _plain_key(value: object) -> bool:
+    """True for a plain, non-NaN Python float or int ordering key component."""
+    kind = type(value)
+    return kind is int or (kind is float and value == value)
+
+
+def _sample_key(sample: Point2) -> Tuple[object, ...]:
+    """Cache key that also distinguishes the numeric types of a sample."""
+    return tuple((type(value), value) for value in sample)
+
+
 class ProjectedSelectionIndex:
     """Spatial index and deterministic screen-space selection queries."""
 
@@ -420,7 +451,21 @@ class ProjectedSelectionIndex:
         self._global: List[int] = []
         self._owners: Dict[str, List[int]] = {}
         self._owner_values: Dict[str, PickOwner] = {}
+        self._bboxes: List[Rect] = []
         self._build()
+        # Projected primitives are immutable for this index. Reuse their
+        # deterministic occlusion order across all visibility sample pixels.
+        self._front_keys = tuple((p.depth, -p.layer, -index)
+                                 for index, p in enumerate(self.primitives))
+        # Visibility samples are answered by screened, batched front queries
+        # (see ``_front_many``); their caches live and die with this index.
+        self._bbox_array = np.asarray(self._bboxes, dtype=np.float64).reshape((-1, 4))
+        self._front_exact: Optional[bool] = None
+        self._front_rank: Optional[np.ndarray] = None
+        self._front_triangles: Optional[Tuple[np.ndarray, ...]] = None
+        self._front_opaque: Dict[object, np.ndarray] = {}
+        self._front_fine: Dict[object, np.ndarray] = {}
+        self._front_retained = 0
 
     def _build(self) -> None:
         max_x = max(0, (self.width - 1) // self.tile_size)
@@ -432,7 +477,8 @@ class ProjectedSelectionIndex:
                     current = self._owner_values.get(owner.key)
                     if current is None or owner.priority > current.priority:
                         self._owner_values[owner.key] = owner
-            x0, y0, x1, y1 = primitive.bbox
+            x0, y0, x1, y1 = bbox = primitive.bbox
+            self._bboxes.append(bbox)
             if x1 < 0 or y1 < 0 or x0 > self.width or y0 > self.height:
                 continue
             low_x = max(0, min(max_x, math.floor(x0 / self.tile_size)))
@@ -447,38 +493,407 @@ class ProjectedSelectionIndex:
                 for cell_x in range(low_x, high_x + 1):
                     self._tiles.setdefault((cell_x, cell_y), []).append(index)
 
-    def _indices_for_rect(self, rect: Rect) -> List[int]:
+    def _tile_range(self, rect: Rect):
         x0, y0, x1, y1 = _rect_normalized(rect)
         if x1 < 0 or y1 < 0 or x0 > self.width or y0 > self.height:
-            return []
+            return None
         max_x = max(0, (self.width - 1) // self.tile_size)
         max_y = max(0, (self.height - 1) // self.tile_size)
         low_x = max(0, min(max_x, math.floor(x0 / self.tile_size)))
         high_x = max(0, min(max_x, math.floor(x1 / self.tile_size)))
         low_y = max(0, min(max_y, math.floor(y0 / self.tile_size)))
         high_y = max(0, min(max_y, math.floor(y1 / self.tile_size)))
+        return low_x, high_x, low_y, high_y
+
+    def _indices_for_rect(self, rect: Rect) -> List[int]:
+        cells = self._tile_range(rect)
+        if cells is None:
+            return []
+        low_x, high_x, low_y, high_y = cells
         found = set(self._global)
         for cell_y in range(low_y, high_y + 1):
             for cell_x in range(low_x, high_x + 1):
                 found.update(self._tiles.get((cell_x, cell_y), ()))
         return sorted(found)
 
-    def _front_primitive_at(
+    _FINE_CELL = 4
+    # Screening only ever drops a primitive that the exact scalar test would
+    # also reject.  The half-plane screen is applied to pixels and triangles
+    # within this coordinate range, where the rounding of both the screen
+    # and the scalar test is orders of magnitude below the margins used.
+    _SCREEN_LIMIT = 1.0e6
+    # Retained per-cell candidate ids (8 bytes each) before caches restart.
+    _FRONT_CACHE_IDS = 4_000_000
+    # Overhead of one cache entry, in candidate-id units.
+    _FRONT_ENTRY_COST = 32
+    # Distinct selection filters whose opacity masks are retained.
+    _FRONT_FILTER_MASKS = 8
+
+    def _front_exact_only(self) -> bool:
+        """True when screened queries cannot reproduce the scalar order.
+
+        Depth and layer keys must be plain, non-NaN Python numbers so that
+        one global order equals every per-tile sort (NaN or numpy scalars can
+        make comparisons unordered or non-transitive), and box coordinates
+        must be plain Python numbers exact in float64.  Other indexes keep
+        the scalar query.
+        """
+        exact = self._front_exact
+        if exact is None:
+            exact = not all(
+                _plain_key(key[0]) and _plain_key(key[1]) for key in self._front_keys
+            ) or any(
+                not _float_exact(value) for box in self._bboxes for value in box
+            )
+            self._front_exact = exact
+        return exact
+
+    def _rank(self) -> np.ndarray:
+        """Position of every primitive in the deterministic front-to-back order."""
+        rank = self._front_rank
+        if rank is None:
+            order = sorted(range(len(self.primitives)), key=self._front_keys.__getitem__)
+            rank = np.empty(len(order), dtype=np.int64)
+            rank[np.asarray(order, dtype=np.int64)] = np.arange(len(order), dtype=np.int64)
+            self._front_rank = rank
+        return rank
+
+    def _front_geometry(self) -> Tuple[np.ndarray, ...]:
+        """Screening data of every primitive.
+
+        Returns ``(screenable, origin, edge, length, scale)``.  ``screenable``
+        marks counter-clockwise-normalised, clearly non-degenerate triangles
+        inside the screening range; their edge origins, edge vectors, edge
+        lengths and coordinate scale feed the conservative half-plane test.
+        """
+        geometry = self._front_triangles
+        if geometry is None:
+            count = len(self.primitives)
+            corners = np.zeros((count, 3, 2), dtype=np.float64)
+            screenable = np.zeros(count, dtype=bool)
+            for index, primitive in enumerate(self.primitives):
+                points = primitive.points
+                if primitive.shape == "polygon" and len(points) == 3 and all(
+                    _float_exact(value) for point in points for value in point
+                ):
+                    corners[index] = points
+                    screenable[index] = True
+            with np.errstate(all="ignore"):
+                scale = np.max(np.abs(corners), axis=(1, 2))
+                edge = np.roll(corners, -1, axis=1) - corners
+                length = np.sqrt(np.einsum("tij,tij->ti", edge, edge))
+                area = edge[:, 0, 0] * edge[:, 1, 1] - edge[:, 0, 1] * edge[:, 1, 0]
+                # The area estimate's rounding is far below this bound, so a
+                # screened triangle's orientation is certain.
+                bound = 1.0e-9 * (length[:, 0] * length[:, 1] + scale * (length[:, 0] + length[:, 1])) + 1.0e-9
+                screenable &= (
+                    np.isfinite(area)
+                    & (np.abs(area) > bound)
+                    & (scale <= self._SCREEN_LIMIT)
+                )
+                flip = area < 0.0
+                corners[flip] = corners[flip][:, ::-1]
+                edge = np.roll(corners, -1, axis=1) - corners
+                length = np.sqrt(np.einsum("tij,tij->ti", edge, edge))
+            geometry = (screenable, corners, edge, length, scale)
+            self._front_triangles = geometry
+        return geometry
+
+    def _opaque(self, selection_filter: Optional[SelectionFilter]) -> np.ndarray:
+        """Primitives that can answer a front query under ``selection_filter``.
+
+        Under a filter, point and line primitives whose owners the filter
+        rejects are transparent: the scalar scan skips them unconditionally,
+        so leaving them out cannot change its answer.
+        """
+        mask = self._front_opaque.get(selection_filter)
+        if mask is None:
+            if len(self._front_opaque) >= self._FRONT_FILTER_MASKS:
+                # One boolean per primitive and filter: keep only a few.
+                self._front_opaque.clear()
+            if selection_filter is None:
+                mask = np.ones(len(self.primitives), dtype=bool)
+            else:
+                mask = np.fromiter(
+                    (
+                        primitive.shape == "polygon"
+                        or (
+                            primitive.binding is not None
+                            and any(selection_filter.accepts(owner) for owner in primitive.binding.owners)
+                        )
+                        for primitive in self.primitives
+                    ),
+                    dtype=bool,
+                    count=len(self.primitives),
+                )
+            self._front_opaque[selection_filter] = mask
+        return mask
+
+    def _cache_ids(self, key: object, ids: np.ndarray) -> np.ndarray:
+        """Retain candidate ids under a bounded total; restart when exceeded."""
+        # Every entry also costs its dictionary slot and key, so empty
+        # candidate lists still count against the bound.
+        cost = len(ids) + self._FRONT_ENTRY_COST
+        if self._front_retained + cost > self._FRONT_CACHE_IDS:
+            self._front_fine.clear()
+            self._front_retained = 0
+        self._front_fine[key] = ids
+        self._front_retained += cost
+        return ids
+
+    def _ordered_ids(self, ids: np.ndarray) -> np.ndarray:
+        """Unique ids in the deterministic front-to-back order."""
+        ids = np.unique(ids)
+        return ids[np.argsort(self._rank()[ids], kind="stable")]
+
+    # Fine-cell pruning widens every box by this relative allowance so that a
+    # primitive the scalar bounding-box test accepts only through rounding
+    # (``x1 + radius`` rounding up onto the sample) still reaches the cell.
+    # The rounding of both scalar sums is below 1e-15 of the magnitudes.
+    _FINE_SLACK = 1.0e-9
+
+    def _part_ids(
+        self,
+        source: Optional[Tuple[int, int]],
+        cell: Tuple[int, int],
+        selection_filter: Optional[SelectionFilter],
+        radius: float,
+    ) -> np.ndarray:
+        """Members of one tile (``None``: the global list) that may answer in one fine cell.
+
+        A member is kept unless the filter makes it transparent or its box,
+        widened by the rounding allowance, cannot reach the cell for a query
+        of this radius.  Ids keep the tile's (ascending) order.
+        """
+        key = ("part", source, cell, selection_filter, radius)
+        ids = self._front_fine.get(key)
+        if ids is not None:
+            return ids
+        members = self._global if source is None else self._tiles.get(source, ())
+        candidates = np.asarray(members, dtype=np.int64)
+        if len(candidates):
+            boxes = self._bbox_array[candidates]
+            slack = self._FINE_SLACK * (np.abs(boxes) + (abs(radius) + 1.0))
+            low = boxes[:, :2] - slack[:, :2]
+            high = boxes[:, 2:] + slack[:, 2:]
+            fine = self._FINE_CELL
+            max_x = max(0, (self.width - 1) // fine)
+            max_y = max(0, (self.height - 1) // fine)
+            fine_x, fine_y = cell
+            keep = (
+                self._opaque(selection_filter)[candidates]
+                & (np.clip(np.floor(low[:, 0] / fine), 0, max_x) <= fine_x)
+                & (fine_x <= np.clip(np.floor(high[:, 0] / fine), 0, max_x))
+                & (np.clip(np.floor(low[:, 1] / fine), 0, max_y) <= fine_y)
+                & (fine_y <= np.clip(np.floor(high[:, 1] / fine), 0, max_y))
+            )
+            candidates = candidates[keep]
+        return self._cache_ids(key, candidates)
+
+    def _cells_ids(
+        self,
+        cells: Tuple[Tuple[int, int], ...],
+        tiles: Tuple[int, int, int, int],
+        selection_filter: Optional[SelectionFilter],
+        radius: float,
+    ) -> np.ndarray:
+        """Front-to-back candidates of a query visiting ``cells`` and tile range ``tiles``.
+
+        The scalar query's candidates are exactly the global list plus the
+        members of the tiles in its tile range.  This list is that set, less
+        primitives that cannot reach any of the fine cells (``_part_ids``),
+        so it holds every candidate the scalar bounding-box test can accept
+        and none the scalar query would not visit.
+        """
+        key = ("cells", cells, tiles, selection_filter, radius)
+        ids = self._front_fine.get(key)
+        if ids is None:
+            low_x, high_x, low_y, high_y = tiles
+            sources = [None] + [
+                (tile_x, tile_y)
+                for tile_y in range(low_y, high_y + 1)
+                for tile_x in range(low_x, high_x + 1)
+                if (tile_x, tile_y) in self._tiles
+            ]
+            parts = [
+                self._part_ids(source, cell, selection_filter, radius)
+                for cell in cells
+                for source in sources
+            ]
+            ids = self._cache_ids(key, self._ordered_ids(np.concatenate(parts)))
+        return ids
+
+    def _fine_cells(
+        self, point: Point2, radius: float
+    ) -> Optional[Tuple[Tuple[Tuple[int, int], ...], Tuple[int, int, int, int]]]:
+        """Fine cells and tile range a front query at ``point`` visits (``None``: off screen)."""
+        rect = (point[0] - radius, point[1] - radius, point[0] + radius, point[1] + radius)
+        tiles = self._tile_range(rect)
+        if tiles is None:
+            return None
+        x0, y0, x1, y1 = _rect_normalized(rect)
+        fine = self._FINE_CELL
+        max_x = max(0, (self.width - 1) // fine)
+        max_y = max(0, (self.height - 1) // fine)
+        low_x = max(0, min(max_x, math.floor(x0 / fine)))
+        high_x = max(0, min(max_x, math.floor(x1 / fine)))
+        low_y = max(0, min(max_y, math.floor(y0 / fine)))
+        high_y = max(0, min(max_y, math.floor(y1 / fine)))
+        cells = tuple(
+            (cell_x, cell_y)
+            for cell_y in range(low_y, high_y + 1)
+            for cell_x in range(low_x, high_x + 1)
+        )
+        return cells, tiles
+
+    def _front_reference(
         self,
         point: Point2,
         radius: float = 0.75,
         selection_filter: Optional[SelectionFilter] = None,
     ) -> Optional[int]:
+        """The unscreened scalar front query: all tile candidates, sorted."""
         rect = (point[0] - radius, point[1] - radius, point[0] + radius, point[1] + radius)
-        # Visit the deterministic front-to-back order first. Once a candidate
-        # covers this pixel, farther polygons cannot change the answer.
-        candidates = sorted(self._indices_for_rect(rect), key=lambda index: (
-            self.primitives[index].depth, -self.primitives[index].layer, -index))
+        candidates = sorted(self._indices_for_rect(rect), key=self._front_keys.__getitem__)
         for index in candidates:
             primitive = self.primitives[index]
-            x0, y0, x1, y1 = primitive.bbox
+            x0, y0, x1, y1 = self._bboxes[index]
             if point[0] < x0-radius or point[0] > x1+radius or point[1] < y0-radius or point[1] > y1+radius:
                 continue
+            if selection_filter is not None and primitive.shape != "polygon":
+                binding = primitive.binding
+                if binding is None or not any(selection_filter.accepts(owner) for owner in binding.owners):
+                    continue
+            if _primitive_distance(primitive, point) <= radius:
+                return index
+        return None
+
+    def _front_many(
+        self,
+        points: Sequence[Point2],
+        radius: float = 0.75,
+        selection_filter: Optional[SelectionFilter] = None,
+    ) -> List[Optional[int]]:
+        """Front primitive at each point, as :meth:`_front_reference` defines it.
+
+        Points that visit the same fine cells share one front-to-back
+        candidate list, walked in growing chunks.  In each chunk a vectorised
+        bounding-box test (the scalar test's exact complement) and a
+        conservative triangle half-plane test screen out primitives; the
+        survivors are visited in order by the exact scalar test.  A point is
+        answered by the first survivor that passes, and every candidate before
+        it was either screened out or failed the exact test, so the answer is
+        the one the scalar query gives.
+        """
+        results: List[Optional[int]] = [None] * len(points)
+        if self._front_exact_only() or type(radius) is not float:
+            return [self._front_reference(point, radius, selection_filter) for point in points]
+        groups: Dict[Tuple[Tuple[Tuple[int, int], ...], Tuple[int, int, int, int]], List[int]] = {}
+        for position, point in enumerate(points):
+            if not (_float_exact(point[0]) and _float_exact(point[1])):
+                results[position] = self._front_reference(point, radius, selection_filter)
+                continue
+            visit = self._fine_cells(point, radius)
+            if visit is not None:
+                groups.setdefault(visit, []).append(position)
+        for (cells, tiles), members in groups.items():
+            ids = self._cells_ids(cells, tiles, selection_filter, radius)
+            total = len(ids)
+            unresolved = members
+            start, size = 0, 32
+            while unresolved and start < total:
+                stop = min(total, start + size)
+                unresolved = self._front_chunk(
+                    points, unresolved, results, radius, selection_filter, ids[start:stop]
+                )
+                start, size = stop, size * 4
+        return results
+
+    def _front_chunk(
+        self,
+        points: Sequence[Point2],
+        positions: List[int],
+        results: List[Optional[int]],
+        radius: float,
+        selection_filter: Optional[SelectionFilter],
+        indices: np.ndarray,
+    ) -> List[int]:
+        """Resolve ``positions`` against one front-to-back chunk; return the rest."""
+        boxes = self._bbox_array[indices]
+        screenable, origin, edge, length, scale = self._front_geometry()
+        triangle = screenable[indices] if radius >= 0.0 else np.zeros(len(indices), dtype=bool)
+        has_triangles = bool(triangle.any())
+        unresolved: List[int] = []
+        # Keep each screening matrix bounded (rows x members).
+        step = max(1, 262_144 // max(1, len(indices)))
+        for start in range(0, len(positions), step):
+            rows = positions[start:start + step]
+            coordinates = np.asarray(
+                [points[position] for position in rows], dtype=np.float64
+            ).reshape((-1, 2))
+            x = coordinates[:, 0:1]
+            y = coordinates[:, 1:2]
+            # Scalar rejection was ``x < x0-r or x > x1+r or y < y0-r or
+            # y > y1+r``; keep exactly its complement (NaN-safe).
+            rejected = (
+                (x < boxes[:, 0] - radius)
+                | (x > boxes[:, 2] + radius)
+                | (y < boxes[:, 1] - radius)
+                | (y > boxes[:, 3] + radius)
+            )
+            row_index, column = np.nonzero(~rejected)
+            if has_triangles and len(column):
+                # A pixel farther than ``radius`` outside an edge line of a
+                # triangle is farther than ``radius`` from the triangle.  The
+                # margins (relative to the radius and to the coordinate
+                # scale) are orders of magnitude above the rounding of this
+                # estimate and of the exact scalar test inside the screening
+                # range, so only primitives the exact test rejects are dropped.
+                ids = indices[column]
+                px = coordinates[row_index, 0]
+                py = coordinates[row_index, 1]
+                pixel_scale = np.maximum(np.abs(px), np.abs(py))
+                active = triangle[column] & (pixel_scale <= self._SCREEN_LIMIT)
+                pair_edge = edge[ids]
+                pair_origin = origin[ids]
+                with np.errstate(all="ignore"):
+                    cross = (
+                        pair_edge[:, :, 0] * (py[:, None] - pair_origin[:, :, 1])
+                        - pair_edge[:, :, 1] * (px[:, None] - pair_origin[:, :, 0])
+                    )
+                    margin = radius * (1.0 + 1.0e-6) + 1.0e-6 + 1.0e-9 * (scale[ids] + pixel_scale)
+                    outside = np.any(cross < -margin[:, None] * length[ids], axis=1)
+                keep = ~(active & outside)
+                row_index = row_index[keep]
+                column = column[keep]
+            counts = np.bincount(row_index, minlength=len(rows)).tolist()
+            # Row-major order keeps the chunk's front-to-back order per row.
+            flat = indices[column].tolist()
+            offset = 0
+            for position, count in zip(rows, counts):
+                front = None
+                if count:
+                    front = self._front_scan(
+                        points[position], flat[offset:offset + count],
+                        radius, selection_filter,
+                    )
+                    offset += count
+                if front is None:
+                    unresolved.append(position)
+                else:
+                    results[position] = front
+        return unresolved
+
+    def _front_scan(
+        self,
+        point: Point2,
+        candidates: Iterable[int],
+        radius: float,
+        selection_filter: Optional[SelectionFilter],
+    ) -> Optional[int]:
+        """First candidate, in the given order, within ``radius`` of ``point``."""
+        for index in candidates:
+            primitive = self.primitives[index]
             # Filtered point/line annotations are transparent; surfaces remain
             # occluders even when their owners do not match the selection filter.
             if selection_filter is not None and primitive.shape != "polygon":
@@ -488,6 +903,89 @@ class ProjectedSelectionIndex:
             if _primitive_distance(primitive, point) <= radius:
                 return index
         return None
+
+    def _front_primitive_at(
+        self,
+        point: Point2,
+        radius: float = 0.75,
+        selection_filter: Optional[SelectionFilter] = None,
+    ) -> Optional[int]:
+        # The answer is the first primitive, in the deterministic
+        # front-to-back order, whose exact distance to the pixel is within
+        # ``radius``; farther primitives cannot change it.
+        return self._front_many((point,), radius, selection_filter)[0]
+
+    def _fronts(
+        self, points: Sequence[Point2], selection_filter: SelectionFilter
+    ) -> List[Optional[int]]:
+        """Front primitives for visibility samples.
+
+        A subclass that redefines :meth:`_front_primitive_at` (a reference
+        implementation, for instance) keeps its own definition per point.
+        """
+        if type(self)._front_primitive_at is not ProjectedSelectionIndex._front_primitive_at:
+            return [
+                self._front_primitive_at(point, selection_filter=selection_filter)
+                for point in points
+            ]
+        return self._front_many(points, selection_filter=selection_filter)
+
+    def _visible_owners(
+        self,
+        owners: Dict[str, Sequence[int]],
+        samples_of: Callable[[ProjectedPrimitive], Iterable[Point2]],
+        selection_filter: SelectionFilter,
+    ) -> set:
+        """Owners with at least one sample whose front primitive is theirs.
+
+        Samples are resolved in growing rounds over all still-undecided
+        owners, so owners that are plainly visible stop after a few samples
+        while hidden owners get their remaining samples batched.  The result
+        is an existence test per owner and does not depend on the order.
+        """
+
+        def pairs(indices: Sequence[int]) -> Iterator[Tuple[int, Point2]]:
+            for index in indices:
+                for sample in samples_of(self.primitives[index]):
+                    yield index, sample
+
+        pending = {key: pairs(indices) for key, indices in owners.items()}
+        visible = set()
+        fronts: Dict[object, Optional[int]] = {}
+        chunk = 4
+        while pending:
+            batch = {}
+            for key, iterator in pending.items():
+                items = list(islice(iterator, chunk))
+                if items:
+                    batch[key] = items
+            pending = {key: pending[key] for key in batch}
+            needed = {}
+            for items in batch.values():
+                for _index, sample in items:
+                    sample_key = _sample_key(sample)
+                    if sample_key not in fronts and sample_key not in needed:
+                        needed[sample_key] = sample
+            fronts.update(zip(needed, self._fronts(list(needed.values()), selection_filter)))
+            for key, items in batch.items():
+                for index, sample in items:
+                    sample_key = _sample_key(sample)
+                    if sample_key in fronts:
+                        front = fronts[sample_key]
+                    else:  # NaN keys never compare equal
+                        front = self._fronts((sample,), selection_filter)[0]
+                    if front is None:
+                        continue
+                    binding = self.primitives[front].binding
+                    if front == index or (
+                        binding is not None
+                        and any(owner.key == key for owner in binding.owners)
+                    ):
+                        visible.add(key)
+                        del pending[key]
+                        break
+            chunk *= 4
+        return visible
 
     def point_hits(
         self,
@@ -607,31 +1105,6 @@ class ProjectedSelectionIndex:
                 return ()
         return tuple((start[0]+dx*t, start[1]+dy*t) for t in ((low+high)*0.5,low,high))
 
-    def _owner_visible(
-        self,
-        owner_key: str,
-        indices: Sequence[int],
-        rect: Rect,
-        selection_filter: SelectionFilter,
-    ) -> bool:
-        for index in indices:
-            primitive = self.primitives[index]
-            for sample in self._rectangle_samples(primitive, rect):
-                if not _point_in_rect(sample, rect):
-                    continue
-                front = self._front_primitive_at(
-                    sample, selection_filter=selection_filter
-                )
-                if front is None:
-                    continue
-                front_binding = self.primitives[front].binding
-                if front == index or (
-                    front_binding is not None
-                    and any(owner.key == owner_key for owner in front_binding.owners)
-                ):
-                    return True
-        return False
-
     def rectangle_hits(
         self,
         rect: Sequence[float],
@@ -697,7 +1170,7 @@ class ProjectedSelectionIndex:
                 if selection_filter.accepts(owner):
                     owner_candidates.setdefault(owner.key, []).append(index)
 
-        hits: List[SelectionHit] = []
+        qualified_owners: Dict[str, List[int]] = {}
         for owner_key, qualified in owner_candidates.items():
             if not crossing:
                 all_indices = self._owners.get(owner_key, ())
@@ -707,13 +1180,23 @@ class ProjectedSelectionIndex:
                 ):
                     continue
                 qualified = list(all_indices)
+            qualified_owners[owner_key] = qualified
+        visible_owners = None
+        if depth == SelectionDepth.VISIBLE:
+            visible_owners = self._visible_owners(
+                qualified_owners,
+                lambda primitive: [
+                    sample for sample in self._rectangle_samples(primitive, area)
+                    if _point_in_rect(sample, area)
+                ],
+                selection_filter,
+            )
+
+        hits: List[SelectionHit] = []
+        for owner_key, qualified in qualified_owners.items():
             visible = True
-            if depth == SelectionDepth.VISIBLE:
-                visible = self._owner_visible(
-                    owner_key, qualified, area, selection_filter
-                )
-                if not visible:
-                    continue
+            if visible_owners is not None and owner_key not in visible_owners:
+                continue
             primitive = min(
                 (self.primitives[index] for index in qualified),
                 key=lambda value: (value.depth, -value.layer, value.index),
@@ -758,34 +1241,21 @@ class ProjectedSelectionIndex:
                 if selection_filter.accepts(owner):
                     owner_candidates.setdefault(owner.key, []).append(index)
 
+        visible_owners = None
+        if depth == SelectionDepth.VISIBLE:
+            visible_owners = self._visible_owners(
+                owner_candidates,
+                lambda primitive: [
+                    sample for sample in self._samples(primitive)
+                    if _point_in_polygon(sample, polygon)
+                ],
+                selection_filter,
+            )
         hits: List[SelectionHit] = []
         for owner_key, qualified in owner_candidates.items():
             visible = True
-            if depth == SelectionDepth.VISIBLE:
-                visible = False
-                for index in qualified:
-                    for sample in self._samples(self.primitives[index]):
-                        if not _point_in_polygon(sample, polygon):
-                            continue
-                        front = self._front_primitive_at(
-                            sample, selection_filter=selection_filter
-                        )
-                        if front is None:
-                            continue
-                        front_binding = self.primitives[front].binding
-                        if front == index or (
-                            front_binding is not None
-                            and any(
-                                owner.key == owner_key
-                                for owner in front_binding.owners
-                            )
-                        ):
-                            visible = True
-                            break
-                    if visible:
-                        break
-                if not visible:
-                    continue
+            if visible_owners is not None and owner_key not in visible_owners:
+                continue
             primitive = min(
                 (self.primitives[index] for index in qualified),
                 key=lambda value: (value.depth, -value.layer, value.index),

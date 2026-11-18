@@ -25,6 +25,7 @@ from ..arrays import MeshArrays
 from ..capabilities import ViewerCapabilities
 from ..clipping import SectionPlane
 from ..contracts import Pick, PresentedFrame, ViewerState
+from ..core import tk_wheel_notches
 from ..core import (
     Camera3D,
     Point3D,
@@ -223,8 +224,8 @@ class Any3DView(RetainedViewer, ttk.Frame):
         surface.bind("<ButtonRelease-2>", self._release, add="+")
         surface.bind("<ButtonRelease-3>", self._release, add="+")
         surface.bind("<MouseWheel>", self._wheel, add="+")
-        surface.bind("<Button-4>", lambda _event: self._zoom(0.9), add="+")
-        surface.bind("<Button-5>", lambda _event: self._zoom(1.1), add="+")
+        surface.bind("<Button-4>", lambda _event: self._wheel_zoom(1.0), add="+")
+        surface.bind("<Button-5>", lambda _event: self._wheel_zoom(-1.0), add="+")
         surface.bind("<Configure>", lambda _event: self.redraw(), add="+")
         surface.bind("<Escape>", self._cancel_interaction, add="+")
         surface.bind("<FocusOut>", self._focus_out, add="+")
@@ -251,7 +252,7 @@ class Any3DView(RetainedViewer, ttk.Frame):
 
 
     def _wheel(self, event: tk.Event) -> None:
-        self._zoom(0.9 if int(getattr(event, "delta", 0)) > 0 else 1.1)
+        self._wheel_zoom(tk_wheel_notches(getattr(event, "delta", 0)))
 
 
     def _press_select(self, event: tk.Event) -> None:

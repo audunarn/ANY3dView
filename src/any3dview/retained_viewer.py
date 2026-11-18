@@ -355,6 +355,8 @@ class RetainedViewer:
         self._mouse = (0, 0)
         self._drag = ""
         self._wheel_finish_after_id: Optional[str] = None
+        # Scene diagonal for the fixed wheel step; set by fit_to_scene.
+        self._wheel_zoom_scale: Optional[float] = None
         self._selection_press: Optional[tuple[int, int]] = None
         self._selection_current: Optional[tuple[int, int]] = None
         self._selection_points: list[tuple[int, int]] = []
@@ -828,6 +830,40 @@ class RetainedViewer:
         self._renderer.pick_dirty = True
         self._selection_index = None
         self.redraw()
+        self._schedule_wheel_finish()
+
+
+    #: Fraction of the scene diagonal moved per wheel notch.
+    wheel_zoom_step_fraction: float = 0.05
+
+    def _wheel_zoom(self, notches: float) -> None:
+        """Fixed-step wheel zoom: ``notches`` > 0 moves the camera forward.
+
+        Each notch moves the camera the same world distance, independent of
+        how close it is to the orbit target; the target is pushed ahead of
+        the camera when reached. The step is a fraction of the scene size
+        measured by the last :meth:`fit_to_scene`, so wheel input never
+        scans geometry. Before any fit, the step is fixed at a tenth of the
+        camera distance at the first wheel event and kept until a fit.
+        """
+
+        notches = float(notches)
+        if not math.isfinite(notches) or notches == 0.0:
+            return
+        scale = getattr(self, "_wheel_zoom_scale", None)
+        if scale is None:
+            scale = self._wheel_zoom_scale = (
+                2.0 * self.camera.distance
+            )
+        step = max(self.camera.near * 2.0, self.wheel_zoom_step_fraction * scale)
+        self.camera.dolly(notches * step, min_distance=step)
+        self._renderer.pick_dirty = True
+        self._selection_index = None
+        self.redraw()
+        self._schedule_wheel_finish()
+
+
+    def _schedule_wheel_finish(self) -> None:
         if self._wheel_finish_after_id is not None:
             try:
                 self.after_cancel(self._wheel_finish_after_id)
@@ -3581,6 +3617,7 @@ class RetainedViewer:
         low, high = bounds
         target = 0.5 * (low + high)
         radius = max(1.0e-6, float(np.linalg.norm(high - low)) * 0.5)
+        self._wheel_zoom_scale = 2.0 * radius
         width, height = self.viewport_size
         aspect = max(1.0e-9, float(width) / max(1.0, float(height)))
         limiting_tangent = math.tan(self.camera.fov / 2) * min(1.0, aspect)

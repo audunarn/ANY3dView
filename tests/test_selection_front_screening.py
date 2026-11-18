@@ -183,3 +183,77 @@ def test_hidden_owner_window_query_does_bounded_exact_work(monkeypatch):
     samples = len({sample for p in primitives for sample in ProjectedSelectionIndex._samples(p)})
     assert calls[0] <= 4 * samples, (calls[0], samples)
     assert elapsed < 20.0  # generous wall-clock guard; the count above is the contract
+
+
+# Review findings (Codex round 1), each reproduced against the previous query.
+
+def _same(primitives, width, height, rect, *, filt=None, crossing=False, tile_size=16):
+    filt = filt or SelectionFilter()
+    fast = ProjectedSelectionIndex(primitives, width, height, tile_size=tile_size)
+    slow = ReferenceIndex(primitives, width, height, tile_size=tile_size)
+    for depth in (SelectionDepth.VISIBLE, SelectionDepth.THROUGH):
+        # repr: NaN depths compare unequal to themselves.
+        assert repr(fast.rectangle_hits(rect, filt, crossing=crossing, depth=depth)) == \
+            repr(slow.rectangle_hits(rect, filt, crossing=crossing, depth=depth))
+    return fast
+
+
+@pytest.mark.parametrize("tile_size", (8, 9, 10, 11, 13, 16, 17))
+@pytest.mark.parametrize("radius", (0.0, 3.5))
+def test_fine_cells_spanning_two_tiles_keep_every_candidate(tile_size, radius):
+    point = ProjectedPrimitive(0, "point", ((9.2, 5.0),), (1.0,), PickBinding.one("p", "geometry.vertex"),
+                               radius=radius)
+    _same([point], 32, 32, (0, 0, 32, 32), tile_size=tile_size)
+    primitives = _scene(tile_size, count=200, size=96)
+    for crossing in (False, True):
+        _same(primitives, 96, 80, (-5, -5, 101, 85), crossing=crossing, tile_size=tile_size)
+
+
+@pytest.mark.parametrize("radius", (0.0, 3.5))
+def test_nan_depths_keep_the_scalar_tile_order(radius):
+    nan = float("nan")
+    primitives = [
+        ProjectedPrimitive(index, "point", (position,), (depth,), PickBinding.one(str(index), "geometry.vertex"),
+                           radius=radius)
+        for index, (position, depth) in enumerate((((5, 5), 0.0), ((25, 5), 0.0), ((5, 5), nan)))
+    ]
+    for crossing in (False, True):
+        _same(primitives, 32, 32, (4, 4, 6, 6), crossing=crossing)
+
+
+@pytest.mark.parametrize("radius", (0.0, 3.5))
+def test_huge_finite_triangle_is_never_screened_out(radius):
+    occluder = ProjectedPrimitive(0, "polygon", ((3e17, 2.4e17), (-3e17 + 448, -2.4e17 + 128), (5.4e17, -7.9e17)),
+                                  (0.0,) * 3, None)
+    point = ProjectedPrimitive(1, "point", ((349.0, 144.0),), (1.0,), PickBinding.one("p", "geometry.vertex"),
+                               radius=radius)
+    _same([occluder, point], 512, 512, (348, 143, 350, 145))
+
+
+def test_integer_coordinates_beyond_float_precision_use_the_scalar_query():
+    big = 2 ** 60
+    primitives = [
+        ProjectedPrimitive(0, "polygon", ((big, 0), (big + 1, 0), (big, 1)), (0.0,) * 3, None),
+        ProjectedPrimitive(1, "point", ((3, 3),), (1.0,), PickBinding.one("p", "geometry.vertex"), radius=3.5),
+    ]
+    _same(primitives, 16, 16, (0, 0, 16, 16))
+
+
+def test_retained_front_candidates_are_bounded(monkeypatch):
+    rng = random.Random(8)
+    primitives = [
+        ProjectedPrimitive(i, "polygon", ((rng.uniform(-900, -800), rng.uniform(-900, -800)),
+                                          (rng.uniform(1200, 1300), rng.uniform(-900, -800)),
+                                          (rng.uniform(0, 300), rng.uniform(1200, 1300))),
+                           (0.5,) * 3, None)
+        for i in range(100)
+    ]
+    primitives += [
+        ProjectedPrimitive(100 + i, "point", ((float(i % 32) * 8 + 2, float(i // 32) * 8 + 2),), (1.0,),
+                           PickBinding.one(f"p{i}", "geometry.vertex"), radius=3.5)
+        for i in range(1024)
+    ]
+    monkeypatch.setattr(ProjectedSelectionIndex, "_FRONT_CACHE_IDS", 20_000)
+    fast = _same(primitives, 256, 256, (0, 0, 256, 256))
+    assert fast._front_retained <= 20_000
+    assert sum(len(ids) for ids in fast._front_fine.values()) == fast._front_retained

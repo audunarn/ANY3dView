@@ -405,6 +405,19 @@ def _primitive_crosses_polygon(
     )
 
 
+def _float_exact(value: object) -> bool:
+    """True when ``value`` compares the same in Python and as float64.
+
+    Floats always do; integers do up to 2**53.  Anything else keeps the
+    scalar path.
+    """
+    if isinstance(value, (float, np.floating)):
+        return True
+    if isinstance(value, (int, np.integer)):
+        return -(2 ** 53) <= int(value) <= 2 ** 53
+    return False
+
+
 class ProjectedSelectionIndex:
     """Spatial index and deterministic screen-space selection queries."""
 
@@ -430,15 +443,15 @@ class ProjectedSelectionIndex:
         # deterministic occlusion order across all visibility sample pixels.
         self._front_keys = tuple((p.depth, -p.layer, -index)
                                  for index, p in enumerate(self.primitives))
-        # Front-to-back streams are sorted lazily, one tile at a time, and
-        # carry their bounding boxes so a sample pixel rejects most of a
-        # tile in one vectorised comparison (the same IEEE comparisons as
-        # the scalar test, so the visited candidates are unchanged).
+        # Visibility samples are answered by screened, batched front queries
+        # (see ``_front_many``); their caches live and die with this index.
         self._bbox_array = np.asarray(self._bboxes, dtype=np.float64).reshape((-1, 4))
-        self._front_parents: Dict[object, Tuple[np.ndarray, ...]] = {}
-        self._front_opaque: Dict[object, np.ndarray] = {}
-        self._front_fine: Dict[object, Tuple[np.ndarray, ...]] = {}
+        self._front_exact: Optional[bool] = None
         self._front_rank: Optional[np.ndarray] = None
+        self._front_triangles: Optional[Tuple[np.ndarray, ...]] = None
+        self._front_opaque: Dict[object, np.ndarray] = {}
+        self._front_fine: Dict[object, np.ndarray] = {}
+        self._front_retained = 0
 
     def _build(self) -> None:
         max_x = max(0, (self.width - 1) // self.tile_size)
@@ -490,7 +503,31 @@ class ProjectedSelectionIndex:
         return sorted(found)
 
     _FINE_CELL = 4
-    _STREAM_FIELDS = 6
+    # Screening only ever drops a primitive that the exact scalar test would
+    # also reject.  The half-plane screen is applied to pixels and triangles
+    # within this coordinate range, where the rounding of both the screen
+    # and the scalar test is orders of magnitude below the margins used.
+    _SCREEN_LIMIT = 1.0e6
+    # Retained per-cell candidate ids (8 bytes each) before caches restart.
+    _FRONT_CACHE_IDS = 4_000_000
+
+    def _front_exact_only(self) -> bool:
+        """True when screened queries cannot reproduce the scalar order.
+
+        A NaN depth or layer makes the front-to-back keys unordered, so a
+        sort of a tile's candidates depends on their input order; and
+        integer coordinates beyond 2**53 compare exactly in Python but not
+        after conversion to float64.  Such indexes keep the scalar query.
+        """
+        exact = self._front_exact
+        if exact is None:
+            exact = any(
+                key[0] != key[0] or key[1] != key[1] for key in self._front_keys
+            ) or any(
+                not _float_exact(value) for box in self._bboxes for value in box
+            )
+            self._front_exact = exact
+        return exact
 
     def _rank(self) -> np.ndarray:
         """Position of every primitive in the deterministic front-to-back order."""
@@ -502,149 +539,140 @@ class ProjectedSelectionIndex:
             self._front_rank = rank
         return rank
 
-    def _parent_stream(self, cell: object) -> Tuple[np.ndarray, ...]:
-        """Front-to-back members of one tile (``None``: the global list).
+    def _front_geometry(self) -> Tuple[np.ndarray, ...]:
+        """Screening data of every primitive.
 
-        Returns ``(indices, boxes, triangle, origin, edge, length)``: the
-        bounding boxes, and for counter-clockwise-normalised triangles the
-        edge origins, edge vectors and edge lengths used by the conservative
-        half-plane rejection in :meth:`_front_many`.
+        Returns ``(screenable, origin, edge, length, scale)``.  ``screenable``
+        marks counter-clockwise-normalised, clearly non-degenerate triangles
+        inside the screening range; their edge origins, edge vectors, edge
+        lengths and coordinate scale feed the conservative half-plane test.
         """
-        stream = self._front_parents.get(cell)
-        if stream is None:
-            members = np.asarray(
-                self._global if cell is None else self._tiles.get(cell, ()), dtype=np.int64
-            )
-            ordered = members[np.argsort(self._rank()[members], kind="stable")]
-            count = len(ordered)
+        geometry = self._front_triangles
+        if geometry is None:
+            count = len(self.primitives)
             corners = np.zeros((count, 3, 2), dtype=np.float64)
-            triangle = np.zeros(count, dtype=bool)
-            for row, index in enumerate(ordered.tolist()):
-                primitive = self.primitives[index]
-                if primitive.shape == "polygon" and len(primitive.points) == 3:
-                    corners[row] = primitive.points
-                    triangle[row] = True
+            screenable = np.zeros(count, dtype=bool)
+            for index, primitive in enumerate(self.primitives):
+                points = primitive.points
+                if primitive.shape == "polygon" and len(points) == 3 and all(
+                    _float_exact(value) for point in points for value in point
+                ):
+                    corners[index] = points
+                    screenable[index] = True
             with np.errstate(all="ignore"):
+                scale = np.max(np.abs(corners), axis=(1, 2))
                 edge = np.roll(corners, -1, axis=1) - corners
+                length = np.sqrt(np.einsum("tij,tij->ti", edge, edge))
                 area = edge[:, 0, 0] * edge[:, 1, 1] - edge[:, 0, 1] * edge[:, 1, 0]
-                # Degenerate or non-finite triangles keep the exact scalar path.
-                triangle &= (
+                # The area estimate's rounding is far below this bound, so a
+                # screened triangle's orientation is certain.
+                bound = 1.0e-9 * (length[:, 0] * length[:, 1] + scale * (length[:, 0] + length[:, 1])) + 1.0e-9
+                screenable &= (
                     np.isfinite(area)
-                    & (np.abs(area) > 1.0e-6)
-                    & np.all(np.isfinite(corners), axis=(1, 2))
+                    & (np.abs(area) > bound)
+                    & (scale <= self._SCREEN_LIMIT)
                 )
-                # Orient every triangle counter-clockwise (in these
-                # coordinates) so "outside an edge" is a negative cross product.
                 flip = area < 0.0
                 corners[flip] = corners[flip][:, ::-1]
                 edge = np.roll(corners, -1, axis=1) - corners
                 length = np.sqrt(np.einsum("tij,tij->ti", edge, edge))
-            stream = (ordered, self._bbox_array[ordered], triangle, corners, edge, length)
-            self._front_parents[cell] = stream
-        return stream
+            geometry = (screenable, corners, edge, length, scale)
+            self._front_triangles = geometry
+        return geometry
 
-    def _opaque_mask(
-        self, cell: object, selection_filter: Optional[SelectionFilter]
-    ) -> np.ndarray:
-        """Members of a parent stream that can answer a front query.
+    def _opaque(self, selection_filter: Optional[SelectionFilter]) -> np.ndarray:
+        """Primitives that can answer a front query under ``selection_filter``.
 
         Under a filter, point and line primitives whose owners the filter
         rejects are transparent: the scalar scan skips them unconditionally,
-        so dropping them here cannot change its answer.
+        so leaving them out cannot change its answer.
         """
-        key = (cell, selection_filter)
-        mask = self._front_opaque.get(key)
+        mask = self._front_opaque.get(selection_filter)
         if mask is None:
-            indices = self._parent_stream(cell)[0]
             if selection_filter is None:
-                mask = np.ones(len(indices), dtype=bool)
+                mask = np.ones(len(self.primitives), dtype=bool)
             else:
-                values = []
-                for index in indices.tolist():
-                    primitive = self.primitives[index]
-                    binding = primitive.binding
-                    values.append(
+                mask = np.fromiter(
+                    (
                         primitive.shape == "polygon"
                         or (
-                            binding is not None
-                            and any(selection_filter.accepts(owner) for owner in binding.owners)
+                            primitive.binding is not None
+                            and any(selection_filter.accepts(owner) for owner in primitive.binding.owners)
                         )
-                    )
-                mask = np.asarray(values, dtype=bool).reshape(-1)
-            self._front_opaque[key] = mask
+                        for primitive in self.primitives
+                    ),
+                    dtype=bool,
+                    count=len(self.primitives),
+                )
+            self._front_opaque[selection_filter] = mask
         return mask
 
-    def _ordered(self, parts: List[Tuple[np.ndarray, ...]]) -> Tuple[np.ndarray, ...]:
-        """Join disjoint-or-overlapping streams into one front-to-back stream."""
-        if not parts:
-            return tuple(
-                np.zeros((0,) + shape, dtype=dtype)
-                for shape, dtype in (
-                    ((), np.int64), ((4,), np.float64), ((), bool),
-                    ((3, 2), np.float64), ((3, 2), np.float64), ((3,), np.float64),
-                )
-            )
-        if len(parts) == 1:
-            return parts[0]
-        joined = [np.concatenate(values) for values in zip(*parts)]
-        _unique, first = np.unique(joined[0], return_index=True)
-        order = first[np.argsort(self._rank()[joined[0][first]], kind="stable")]
-        return tuple(value[order] for value in joined)
+    def _cache_ids(self, key: object, ids: np.ndarray) -> np.ndarray:
+        """Retain candidate ids under a bounded total; restart when exceeded."""
+        if self._front_retained + len(ids) > self._FRONT_CACHE_IDS:
+            self._front_fine.clear()
+            self._front_retained = 0
+        self._front_fine[key] = ids
+        self._front_retained += len(ids)
+        return ids
 
-    def _fine_stream(
+    def _ordered_ids(self, ids: np.ndarray) -> np.ndarray:
+        """Unique ids in the deterministic front-to-back order."""
+        ids = np.unique(ids)
+        return ids[np.argsort(self._rank()[ids], kind="stable")]
+
+    def _fine_ids(
         self, cell: Tuple[int, int], selection_filter: Optional[SelectionFilter]
-    ) -> Tuple[np.ndarray, ...]:
+    ) -> np.ndarray:
         """Front-to-back candidates of one fine cell under one filter.
 
-        A fine cell lies inside exactly one tile, and every primitive whose
-        box reaches the cell is a member of that tile or of the global list.
-        Fine cells use the same clamped floor mapping as tiles, so a query
-        visits a superset of the primitives whose boxes reach its pixel.
+        Every primitive whose box reaches the cell is a member of the global
+        list or of a tile overlapping the cell.  Fine cells use the same
+        clamped floor mapping as tiles, so a query visits a superset of the
+        primitives whose boxes reach its pixel.
         """
         key = (cell, selection_filter)
-        stream = self._front_fine.get(key)
-        if stream is not None:
-            return stream
+        ids = self._front_fine.get(key)
+        if ids is not None:
+            return ids
         fine = self._FINE_CELL
         fine_x, fine_y = cell
-        parent = (fine_x * fine // self.tile_size, fine_y * fine // self.tile_size)
-        max_x = max(0, (self.width - 1) // fine)
-        max_y = max(0, (self.height - 1) // fine)
-        parts = []
-        for source in (None, parent):
-            values = self._parent_stream(source)
-            if not len(values[0]):
-                continue
-            boxes = values[1]
-            with np.errstate(invalid="ignore"):
-                low_x = np.clip(np.floor(boxes[:, 0] / fine), 0, max_x)
-                high_x = np.clip(np.floor(boxes[:, 2] / fine), 0, max_x)
-                low_y = np.clip(np.floor(boxes[:, 1] / fine), 0, max_y)
-                high_y = np.clip(np.floor(boxes[:, 3] / fine), 0, max_y)
-            member = (
-                self._opaque_mask(source, selection_filter)
+        tile = self.tile_size
+        max_tile_x = max(0, (self.width - 1) // tile)
+        max_tile_y = max(0, (self.height - 1) // tile)
+        members = list(self._global)
+        for tile_y in range(fine_y * fine // tile, min(max_tile_y, ((fine_y + 1) * fine - 1) // tile) + 1):
+            for tile_x in range(fine_x * fine // tile, min(max_tile_x, ((fine_x + 1) * fine - 1) // tile) + 1):
+                members.extend(self._tiles.get((tile_x, tile_y), ()))
+        candidates = np.asarray(members, dtype=np.int64)
+        if len(candidates):
+            boxes = self._bbox_array[candidates]
+            max_x = max(0, (self.width - 1) // fine)
+            max_y = max(0, (self.height - 1) // fine)
+            low_x = np.clip(np.floor(boxes[:, 0] / fine), 0, max_x)
+            high_x = np.clip(np.floor(boxes[:, 2] / fine), 0, max_x)
+            low_y = np.clip(np.floor(boxes[:, 1] / fine), 0, max_y)
+            high_y = np.clip(np.floor(boxes[:, 3] / fine), 0, max_y)
+            keep = (
+                self._opaque(selection_filter)[candidates]
                 & (low_x <= fine_x) & (fine_x <= high_x)
                 & (low_y <= fine_y) & (fine_y <= high_y)
             )
-            if member.any():
-                parts.append(tuple(value[member] for value in values))
-        stream = self._ordered(parts)
-        self._front_fine[key] = stream
-        return stream
+            candidates = self._ordered_ids(candidates[keep])
+        return self._cache_ids(key, candidates)
 
-    def _cells_stream(
+    def _cells_ids(
         self, cells: Tuple[Tuple[int, int], ...], selection_filter: Optional[SelectionFilter]
-    ) -> Tuple[np.ndarray, ...]:
-        """One duplicate-free front-to-back stream over several fine cells."""
+    ) -> np.ndarray:
+        """One duplicate-free front-to-back candidate list over several fine cells."""
         if len(cells) == 1:
-            return self._fine_stream(cells[0], selection_filter)
+            return self._fine_ids(cells[0], selection_filter)
         key = (cells, selection_filter)
-        stream = self._front_fine.get(key)
-        if stream is None:
-            parts = [self._fine_stream(cell, selection_filter) for cell in cells]
-            stream = self._ordered([part for part in parts if len(part[0])])
-            self._front_fine[key] = stream
-        return stream
+        ids = self._front_fine.get(key)
+        if ids is None:
+            parts = [self._fine_ids(cell, selection_filter) for cell in cells]
+            ids = self._cache_ids(key, self._ordered_ids(np.concatenate(parts)))
+        return ids
 
     def _fine_cells(
         self, point: Point2, radius: float
@@ -667,42 +695,65 @@ class ProjectedSelectionIndex:
             for cell_x in range(low_x, high_x + 1)
         )
 
+    def _front_reference(
+        self,
+        point: Point2,
+        radius: float = 0.75,
+        selection_filter: Optional[SelectionFilter] = None,
+    ) -> Optional[int]:
+        """The unscreened scalar front query: all tile candidates, sorted."""
+        rect = (point[0] - radius, point[1] - radius, point[0] + radius, point[1] + radius)
+        candidates = sorted(self._indices_for_rect(rect), key=self._front_keys.__getitem__)
+        for index in candidates:
+            primitive = self.primitives[index]
+            x0, y0, x1, y1 = self._bboxes[index]
+            if point[0] < x0-radius or point[0] > x1+radius or point[1] < y0-radius or point[1] > y1+radius:
+                continue
+            if selection_filter is not None and primitive.shape != "polygon":
+                binding = primitive.binding
+                if binding is None or not any(selection_filter.accepts(owner) for owner in binding.owners):
+                    continue
+            if _primitive_distance(primitive, point) <= radius:
+                return index
+        return None
+
     def _front_many(
         self,
         points: Sequence[Point2],
         radius: float = 0.75,
         selection_filter: Optional[SelectionFilter] = None,
     ) -> List[Optional[int]]:
-        """Front primitive at each point, as :meth:`_front_primitive_at` defines it.
+        """Front primitive at each point, as :meth:`_front_reference` defines it.
 
-        Points that visit the same fine cells share one front-to-back stream,
-        walked in growing chunks.  In each chunk a vectorised bounding-box
-        test (the scalar test's exact complement) and a conservative triangle
-        half-plane test screen out primitives; the survivors are visited in
-        order by the exact scalar test.  A point is answered by the first
-        survivor that passes, and every member before it in the stream was
-        either screened out or failed the exact test, so the answer is the
-        one a full front-to-back scan gives.
+        Points that visit the same fine cells share one front-to-back
+        candidate list, walked in growing chunks.  In each chunk a vectorised
+        bounding-box test (the scalar test's exact complement) and a
+        conservative triangle half-plane test screen out primitives; the
+        survivors are visited in order by the exact scalar test.  A point is
+        answered by the first survivor that passes, and every candidate before
+        it was either screened out or failed the exact test, so the answer is
+        the one the scalar query gives.
         """
         results: List[Optional[int]] = [None] * len(points)
+        if self._front_exact_only():
+            return [self._front_reference(point, radius, selection_filter) for point in points]
         groups: Dict[Tuple[Tuple[int, int], ...], List[int]] = {}
         for position, point in enumerate(points):
+            if not (_float_exact(point[0]) and _float_exact(point[1])):
+                results[position] = self._front_reference(point, radius, selection_filter)
+                continue
             cells = self._fine_cells(point, radius)
             if cells is not None:
                 groups.setdefault(cells, []).append(position)
         for cells, members in groups.items():
-            indices, boxes, triangle, origin, edge, length = self._cells_stream(
-                cells, selection_filter
-            )
-            total = len(indices)
+            ids = self._cells_ids(cells, selection_filter)
+            total = len(ids)
             unresolved = members
             start, size = 0, 32
             while unresolved and start < total:
                 stop = min(total, start + size)
                 unresolved = self._front_chunk(
-                    points, unresolved, results, radius, selection_filter,
-                    indices[start:stop], boxes[start:stop], triangle[start:stop],
-                    origin[start:stop], edge[start:stop], length[start:stop],
+                    points, unresolved, results, radius, selection_filter, ids[start:stop]
                 )
                 start, size = stop, size * 4
         return results
@@ -715,14 +766,12 @@ class ProjectedSelectionIndex:
         radius: float,
         selection_filter: Optional[SelectionFilter],
         indices: np.ndarray,
-        boxes: np.ndarray,
-        triangle: np.ndarray,
-        origin: np.ndarray,
-        edge: np.ndarray,
-        length: np.ndarray,
     ) -> List[int]:
         """Resolve ``positions`` against one front-to-back chunk; return the rest."""
-        has_triangles = radius >= 0.0 and bool(triangle.any())
+        boxes = self._bbox_array[indices]
+        screenable, origin, edge, length, scale = self._front_geometry()
+        triangle = screenable[indices] if radius >= 0.0 else np.zeros(len(indices), dtype=bool)
+        has_triangles = bool(triangle.any())
         unresolved: List[int] = []
         # Keep each screening matrix bounded (rows x members).
         step = max(1, 262_144 // max(1, len(indices)))
@@ -743,19 +792,27 @@ class ProjectedSelectionIndex:
             )
             row_index, column = np.nonzero(~rejected)
             if has_triangles and len(column):
-                # A point farther than ``radius`` outside an edge line of a
+                # A pixel farther than ``radius`` outside an edge line of a
                 # triangle is farther than ``radius`` from the triangle.  The
-                # margins are many orders above the rounding of this estimate
-                # and of the exact scalar test, so only primitives that the
-                # exact test would also reject are dropped.
-                pair_edge = edge[column]
-                pair_origin = origin[column]
-                cross = (
-                    pair_edge[:, :, 0] * (coordinates[row_index, 1][:, None] - pair_origin[:, :, 1])
-                    - pair_edge[:, :, 1] * (coordinates[row_index, 0][:, None] - pair_origin[:, :, 0])
-                )
-                limit = -(radius * (1.0 + 1.0e-6) + 1.0e-6) * length[column]
-                keep = ~(triangle[column] & np.any(cross < limit, axis=1))
+                # margins (relative to the radius and to the coordinate
+                # scale) are orders of magnitude above the rounding of this
+                # estimate and of the exact scalar test inside the screening
+                # range, so only primitives the exact test rejects are dropped.
+                ids = indices[column]
+                px = coordinates[row_index, 0]
+                py = coordinates[row_index, 1]
+                pixel_scale = np.maximum(np.abs(px), np.abs(py))
+                active = triangle[column] & (pixel_scale <= self._SCREEN_LIMIT)
+                pair_edge = edge[ids]
+                pair_origin = origin[ids]
+                with np.errstate(all="ignore"):
+                    cross = (
+                        pair_edge[:, :, 0] * (py[:, None] - pair_origin[:, :, 1])
+                        - pair_edge[:, :, 1] * (px[:, None] - pair_origin[:, :, 0])
+                    )
+                    margin = radius * (1.0 + 1.0e-6) + 1.0e-6 + 1.0e-9 * (scale[ids] + pixel_scale)
+                    outside = np.any(cross < -margin[:, None] * length[ids], axis=1)
+                keep = ~(active & outside)
                 row_index = row_index[keep]
                 column = column[keep]
             counts = np.bincount(row_index, minlength=len(rows)).tolist()

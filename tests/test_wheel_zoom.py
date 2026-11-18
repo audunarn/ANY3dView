@@ -138,8 +138,7 @@ def test_qt_wheel_step_before_any_fit_is_fixed_at_first_use(qt_viewer):
 
 
 def test_tk_wheel_delta_keeps_fractional_and_multiple_notches():
-    pytest.importorskip("tkinter")
-    from any3dview.gpu.widget import tk_wheel_notches
+    from any3dview.core import tk_wheel_notches
 
     assert tk_wheel_notches(120, "win32") == 1.0
     assert tk_wheel_notches(-240, "win32") == -2.0

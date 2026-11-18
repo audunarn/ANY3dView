@@ -8,6 +8,7 @@ such as :mod:`anytk3d` re-export these values for compatibility.
 from __future__ import annotations
 
 import math
+import sys
 from typing import Any, List, Optional, Tuple
 
 
@@ -515,3 +516,22 @@ class Camera3D:
         if distance < 0.0:
             return None
         return origin + direction * distance
+
+
+def tk_wheel_notches(delta: object, platform: Optional[str] = None) -> float:
+    """Convert a Tk ``<MouseWheel>`` delta to wheel notches (positive = zoom in).
+
+    Windows and X11 report 120 per notch, with smaller values from
+    high-resolution wheels; macOS reports about one unit per notch.
+    A zero or invalid delta gives 0 (no movement).
+    """
+
+    if platform is None:
+        platform = sys.platform
+    try:
+        value = float(delta)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return value if platform == "darwin" else value / 120.0

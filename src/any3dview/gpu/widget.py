@@ -25,6 +25,7 @@ from ..arrays import MeshArrays
 from ..capabilities import ViewerCapabilities
 from ..clipping import SectionPlane
 from ..contracts import Pick, PresentedFrame, ViewerState
+from ..core import tk_wheel_notches
 from ..core import (
     Camera3D,
     Point3D,
@@ -99,23 +100,6 @@ GPU_CAPABILITIES = ViewerCapabilities(
 
 
 _CPU_POINT_STACK_LIMIT = 50_000
-
-
-def tk_wheel_notches(delta: object, platform: str = sys.platform) -> float:
-    """Convert a Tk ``<MouseWheel>`` delta to wheel notches (positive = zoom in).
-
-    Windows and X11 report 120 per notch, with smaller values from
-    high-resolution wheels; macOS reports about one unit per notch.
-    A zero or invalid delta gives 0 (no movement).
-    """
-
-    try:
-        value = float(delta)
-    except (TypeError, ValueError):
-        return 0.0
-    if not math.isfinite(value):
-        return 0.0
-    return value if platform == "darwin" else value / 120.0
 
 
 class Any3DView(RetainedViewer, ttk.Frame):

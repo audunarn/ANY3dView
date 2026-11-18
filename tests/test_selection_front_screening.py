@@ -51,6 +51,23 @@ class ReferenceIndex(ProjectedSelectionIndex):
                 return index
         return None
 
+    def _visible_owners(self, owners, samples_of, selection_filter):
+        # The previous per-owner loop: every sample is queried on its own.
+        visible = set()
+        for key, indices in owners.items():
+            for index in indices:
+                for sample in samples_of(self.primitives[index]):
+                    front = self._front_primitive_at(sample, selection_filter=selection_filter)
+                    if front is None:
+                        continue
+                    binding = self.primitives[front].binding
+                    if front == index or (binding is not None and any(o.key == key for o in binding.owners)):
+                        visible.add(key)
+                        break
+                if key in visible:
+                    break
+        return visible
+
 
 def _scene(seed, count=400, size=256):
     rng = random.Random(seed)
@@ -257,7 +274,7 @@ def test_retained_front_candidates_are_bounded(monkeypatch):
     monkeypatch.setattr(ProjectedSelectionIndex, "_FRONT_CACHE_IDS", 20_000)
     fast = _same(primitives, 256, 256, (0, 0, 256, 256))
     assert fast._front_retained <= 20_000
-    assert sum(len(ids) for ids in fast._front_fine.values()) == fast._front_retained
+    assert sum(len(ids) + fast._FRONT_ENTRY_COST for ids in fast._front_fine.values()) == fast._front_retained
 
 
 # Review findings (Codex round 2).
@@ -286,3 +303,43 @@ def test_filter_masks_are_bounded():
         assert index.rectangle_hits((4, 4, 6, 6), filt, crossing=False, depth=SelectionDepth.VISIBLE) == \
             reference.rectangle_hits((4, 4, 6, 6), filt, crossing=False, depth=SelectionDepth.VISIBLE)
         assert len(index._front_opaque) <= ProjectedSelectionIndex._FRONT_FILTER_MASKS
+
+
+# Review findings (Codex round 3): only plain Python numbers are screened.
+
+@pytest.mark.parametrize("radius", (0.0, 3.5))
+def test_equal_samples_of_different_types_are_not_shared(radius):
+    occluder = ProjectedPrimitive(0, "polygon", ((0.0, 0.0), (0.0, 1000.0), (1000.0, 0.0)), (0.0,) * 3, None)
+    a = ProjectedPrimitive(1, "point", ((800.0, 800.0),), (2.0,), PickBinding.one("a"), radius=radius)
+    b = ProjectedPrimitive(2, "point", ((np.float16(800), np.float16(800)),), (1.0,), PickBinding.one("b"),
+                           radius=radius)
+    _same([occluder, a, b], 1024, 1024, (795, 795, 805, 805))
+
+
+@pytest.mark.parametrize("radius", (0.0, 3.5))
+def test_mixed_numeric_depth_types_keep_the_scalar_order(radius):
+    primitives = [
+        ProjectedPrimitive(i, "point", (position,), (depth,), PickBinding.one(str(i)), radius=radius)
+        for i, (position, depth) in enumerate((((5.0, 5.0), 2 ** 53), ((100.0, 100.0), np.float64(2 ** 53)),
+                                               ((5.0, 5.0), 2 ** 53 + 1)))
+    ]
+    _same(primitives, 128, 128, (4, 4, 6, 6))
+
+
+@pytest.mark.parametrize("radius", (np.float32(0.75), np.float16(0.75), 1, np.float64(0.75)))
+def test_non_python_float_radius_uses_the_scalar_query(radius):
+    primitives = [ProjectedPrimitive(0, "point", ((5.0, 5.0),), (1.0,), PickBinding.one("p"))]
+    fast = ProjectedSelectionIndex(primitives, 16, 16)
+    slow = ReferenceIndex(primitives, 16, 16)
+    for x in (5.75000001, 5.75, 5.7499999, 6.0):
+        assert fast._front_primitive_at((x, 5.0), radius) == slow._front_primitive_at((x, 5.0), radius)
+
+
+def test_empty_candidate_entries_count_against_the_cache_bound():
+    primitives = [ProjectedPrimitive(0, "point", ((5.0, 5.0),), (1.0,), PickBinding.one("p"))]
+    index = ProjectedSelectionIndex(primitives, 16, 16)
+    for i in range(4000):
+        index._front_primitive_at((5.0, 5.0), selection_filter=SelectionFilter(key_prefixes=(f"absent{i}:",)))
+    bound = index._FRONT_CACHE_IDS // index._FRONT_ENTRY_COST + 1
+    assert len(index._front_fine) <= bound
+    assert len(index._front_opaque) <= index._FRONT_FILTER_MASKS

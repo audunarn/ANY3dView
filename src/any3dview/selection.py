@@ -406,19 +406,30 @@ def _primitive_crosses_polygon(
 
 
 def _float_exact(value: object) -> bool:
-    """True when the scalar predicates on ``value`` compute in float64.
+    """True when ``value`` is a plain Python number exact in float64.
 
-    Python floats (and ``numpy.float64``, a float subclass) do; Python
-    integers do up to 2**53, where float64 conversion is exact.  Lower or
-    higher precision numbers (float16/float32/longdouble, numpy integers that
-    can wrap) keep the scalar path, whose arithmetic the screen cannot mirror.
+    The screened front query runs only on plain Python floats and integers
+    up to 2**53: their scalar arithmetic and comparisons are the float64
+    arithmetic the vectorised screen uses.  Any other numeric type (numpy
+    scalars of any precision, bools, decimals) keeps the scalar query.
     """
     kind = type(value)
-    if kind is float or kind is np.float64:
+    if kind is float:
         return True
-    if kind is int or kind is bool:
+    if kind is int:
         return -(2 ** 53) <= value <= 2 ** 53
     return False
+
+
+def _plain_key(value: object) -> bool:
+    """True for a plain, non-NaN Python float or int ordering key component."""
+    kind = type(value)
+    return kind is int or (kind is float and value == value)
+
+
+def _sample_key(sample: Point2) -> Tuple[object, ...]:
+    """Cache key that also distinguishes the numeric types of a sample."""
+    return tuple((type(value), value) for value in sample)
 
 
 class ProjectedSelectionIndex:
@@ -513,21 +524,24 @@ class ProjectedSelectionIndex:
     _SCREEN_LIMIT = 1.0e6
     # Retained per-cell candidate ids (8 bytes each) before caches restart.
     _FRONT_CACHE_IDS = 4_000_000
+    # Overhead of one cache entry, in candidate-id units.
+    _FRONT_ENTRY_COST = 32
     # Distinct selection filters whose opacity masks are retained.
     _FRONT_FILTER_MASKS = 8
 
     def _front_exact_only(self) -> bool:
         """True when screened queries cannot reproduce the scalar order.
 
-        A NaN depth or layer makes the front-to-back keys unordered, so a
-        sort of a tile's candidates depends on their input order; and
-        integer coordinates beyond 2**53 compare exactly in Python but not
-        after conversion to float64.  Such indexes keep the scalar query.
+        Depth and layer keys must be plain, non-NaN Python numbers so that
+        one global order equals every per-tile sort (NaN or numpy scalars can
+        make comparisons unordered or non-transitive), and box coordinates
+        must be plain Python numbers exact in float64.  Other indexes keep
+        the scalar query.
         """
         exact = self._front_exact
         if exact is None:
-            exact = any(
-                key[0] != key[0] or key[1] != key[1] for key in self._front_keys
+            exact = not all(
+                _plain_key(key[0]) and _plain_key(key[1]) for key in self._front_keys
             ) or any(
                 not _float_exact(value) for box in self._bboxes for value in box
             )
@@ -617,11 +631,14 @@ class ProjectedSelectionIndex:
 
     def _cache_ids(self, key: object, ids: np.ndarray) -> np.ndarray:
         """Retain candidate ids under a bounded total; restart when exceeded."""
-        if self._front_retained + len(ids) > self._FRONT_CACHE_IDS:
+        # Every entry also costs its dictionary slot and key, so empty
+        # candidate lists still count against the bound.
+        cost = len(ids) + self._FRONT_ENTRY_COST
+        if self._front_retained + cost > self._FRONT_CACHE_IDS:
             self._front_fine.clear()
             self._front_retained = 0
         self._front_fine[key] = ids
-        self._front_retained += len(ids)
+        self._front_retained += cost
         return ids
 
     def _ordered_ids(self, ids: np.ndarray) -> np.ndarray:
@@ -743,7 +760,7 @@ class ProjectedSelectionIndex:
         the one the scalar query gives.
         """
         results: List[Optional[int]] = [None] * len(points)
-        if self._front_exact_only():
+        if self._front_exact_only() or type(radius) is not float:
             return [self._front_reference(point, radius, selection_filter) for point in points]
         groups: Dict[Tuple[Tuple[int, int], ...], List[int]] = {}
         for position, point in enumerate(points):
@@ -908,7 +925,7 @@ class ProjectedSelectionIndex:
 
         pending = {key: pairs(indices) for key, indices in owners.items()}
         visible = set()
-        fronts: Dict[Point2, Optional[int]] = {}
+        fronts: Dict[object, Optional[int]] = {}
         chunk = 4
         while pending:
             batch = {}
@@ -917,16 +934,19 @@ class ProjectedSelectionIndex:
                 if items:
                     batch[key] = items
             pending = {key: pending[key] for key in batch}
-            needed = list(dict.fromkeys(
-                sample for items in batch.values() for _index, sample in items
-                if sample not in fronts
-            ))
-            fronts.update(zip(needed, self._fronts(needed, selection_filter)))
+            needed = {}
+            for items in batch.values():
+                for _index, sample in items:
+                    sample_key = _sample_key(sample)
+                    if sample_key not in fronts and sample_key not in needed:
+                        needed[sample_key] = sample
+            fronts.update(zip(needed, self._fronts(list(needed.values()), selection_filter)))
             for key, items in batch.items():
                 for index, sample in items:
-                    if sample in fronts:
-                        front = fronts[sample]
-                    else:  # unhashable-equal values such as NaN
+                    sample_key = _sample_key(sample)
+                    if sample_key in fronts:
+                        front = fronts[sample_key]
+                    else:  # NaN keys never compare equal
                         front = self._fronts((sample,), selection_filter)[0]
                     if front is None:
                         continue

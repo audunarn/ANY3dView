@@ -343,3 +343,51 @@ def test_empty_candidate_entries_count_against_the_cache_bound():
     bound = index._FRONT_CACHE_IDS // index._FRONT_ENTRY_COST + 1
     assert len(index._front_fine) <= bound
     assert len(index._front_opaque) <= index._FRONT_FILTER_MASKS
+
+
+# Review finding (Codex round 4): candidate pruning must keep primitives the
+# scalar bounding-box test accepts only through rounding.
+
+def _same_polygon(primitives, width, height, polygon, *, tile_size=16):
+    fast = ProjectedSelectionIndex(primitives, width, height, tile_size=tile_size)
+    slow = ReferenceIndex(primitives, width, height, tile_size=tile_size)
+    for depth in (SelectionDepth.VISIBLE, SelectionDepth.THROUGH):
+        assert repr(fast.polygon_hits(polygon, SelectionFilter(), depth=depth)) == \
+            repr(slow.polygon_hits(polygon, SelectionFilter(), depth=depth))
+
+
+@pytest.mark.parametrize("transpose", (False, True))
+def test_rounding_accepted_occluder_hides_the_target(transpose):
+    def at(x, y):
+        return (y, x) if transpose else (x, y)
+    primitives = [
+        ProjectedPrimitive(0, "point", (at(-5.000000000000001, 10.0),), (0.0,), PickBinding.one("occluder"),
+                           radius=13.0),
+        ProjectedPrimitive(1, "point", (at(8.75, 10.0),), (1.0,), PickBinding.one("target")),
+    ]
+    x0, y0, x1, y1 = 8.5, 9.5, 9.0, 10.5
+    rect = (y0, x0, y1, x1) if transpose else (x0, y0, x1, y1)
+    fast = _same(primitives, 32, 32, rect)
+    assert fast.rectangle_hits(rect, SelectionFilter(), crossing=False, depth=SelectionDepth.VISIBLE) == ()
+    _same_polygon(primitives, 32, 32, (at(x0, y0), at(x1, y0), at(x1, y1), at(x0, y1)))
+
+
+def test_rounding_boundaries_sweep():
+    # Occluder box edges one ulp off fine-cell and tile boundaries, with radii
+    # whose sums with the edge round onto a sample coordinate.
+    rng = random.Random(20261118)
+    ulp = np.nextafter
+    for trial in range(300):
+        tile_size = rng.choice((8, 9, 16, 17))
+        edge = float(rng.choice((4, 8, 12, 16, 17, 32)))
+        edge = float(ulp(edge, -np.inf)) if rng.random() < .5 else float(ulp(edge, np.inf))
+        radius = rng.choice((0.75, 13.0, 0.1, 2.5, 0.3))
+        sample = edge + rng.choice((0.75, -0.75, 0.5, -0.5))
+        occluder_x = edge - radius if rng.random() < .5 else edge + radius
+        primitives = [
+            ProjectedPrimitive(0, "point", ((occluder_x, 10.0),), (0.0,), PickBinding.one("occluder"),
+                               radius=radius),
+            ProjectedPrimitive(1, "point", ((sample, 10.0),), (1.0,), PickBinding.one("target")),
+        ]
+        rect = (sample - .25, 9.5, sample + .25, 10.5)
+        _same(primitives, 48, 32, rect, tile_size=tile_size)

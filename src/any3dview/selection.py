@@ -646,65 +646,90 @@ class ProjectedSelectionIndex:
         ids = np.unique(ids)
         return ids[np.argsort(self._rank()[ids], kind="stable")]
 
-    def _fine_ids(
-        self, cell: Tuple[int, int], selection_filter: Optional[SelectionFilter]
-    ) -> np.ndarray:
-        """Front-to-back candidates of one fine cell under one filter.
+    # Fine-cell pruning widens every box by this relative allowance so that a
+    # primitive the scalar bounding-box test accepts only through rounding
+    # (``x1 + radius`` rounding up onto the sample) still reaches the cell.
+    # The rounding of both scalar sums is below 1e-15 of the magnitudes.
+    _FINE_SLACK = 1.0e-9
 
-        Every primitive whose box reaches the cell is a member of the global
-        list or of a tile overlapping the cell.  Fine cells use the same
-        clamped floor mapping as tiles, so a query visits a superset of the
-        primitives whose boxes reach its pixel.
+    def _part_ids(
+        self,
+        source: Optional[Tuple[int, int]],
+        cell: Tuple[int, int],
+        selection_filter: Optional[SelectionFilter],
+        radius: float,
+    ) -> np.ndarray:
+        """Members of one tile (``None``: the global list) that may answer in one fine cell.
+
+        A member is kept unless the filter makes it transparent or its box,
+        widened by the rounding allowance, cannot reach the cell for a query
+        of this radius.  Ids keep the tile's (ascending) order.
         """
-        key = (cell, selection_filter)
+        key = ("part", source, cell, selection_filter, radius)
         ids = self._front_fine.get(key)
         if ids is not None:
             return ids
-        fine = self._FINE_CELL
-        fine_x, fine_y = cell
-        tile = self.tile_size
-        max_tile_x = max(0, (self.width - 1) // tile)
-        max_tile_y = max(0, (self.height - 1) // tile)
-        members = list(self._global)
-        for tile_y in range(fine_y * fine // tile, min(max_tile_y, ((fine_y + 1) * fine - 1) // tile) + 1):
-            for tile_x in range(fine_x * fine // tile, min(max_tile_x, ((fine_x + 1) * fine - 1) // tile) + 1):
-                members.extend(self._tiles.get((tile_x, tile_y), ()))
+        members = self._global if source is None else self._tiles.get(source, ())
         candidates = np.asarray(members, dtype=np.int64)
         if len(candidates):
             boxes = self._bbox_array[candidates]
+            slack = self._FINE_SLACK * (np.abs(boxes) + (abs(radius) + 1.0))
+            low = boxes[:, :2] - slack[:, :2]
+            high = boxes[:, 2:] + slack[:, 2:]
+            fine = self._FINE_CELL
             max_x = max(0, (self.width - 1) // fine)
             max_y = max(0, (self.height - 1) // fine)
-            low_x = np.clip(np.floor(boxes[:, 0] / fine), 0, max_x)
-            high_x = np.clip(np.floor(boxes[:, 2] / fine), 0, max_x)
-            low_y = np.clip(np.floor(boxes[:, 1] / fine), 0, max_y)
-            high_y = np.clip(np.floor(boxes[:, 3] / fine), 0, max_y)
+            fine_x, fine_y = cell
             keep = (
                 self._opaque(selection_filter)[candidates]
-                & (low_x <= fine_x) & (fine_x <= high_x)
-                & (low_y <= fine_y) & (fine_y <= high_y)
+                & (np.clip(np.floor(low[:, 0] / fine), 0, max_x) <= fine_x)
+                & (fine_x <= np.clip(np.floor(high[:, 0] / fine), 0, max_x))
+                & (np.clip(np.floor(low[:, 1] / fine), 0, max_y) <= fine_y)
+                & (fine_y <= np.clip(np.floor(high[:, 1] / fine), 0, max_y))
             )
-            candidates = self._ordered_ids(candidates[keep])
+            candidates = candidates[keep]
         return self._cache_ids(key, candidates)
 
     def _cells_ids(
-        self, cells: Tuple[Tuple[int, int], ...], selection_filter: Optional[SelectionFilter]
+        self,
+        cells: Tuple[Tuple[int, int], ...],
+        tiles: Tuple[int, int, int, int],
+        selection_filter: Optional[SelectionFilter],
+        radius: float,
     ) -> np.ndarray:
-        """One duplicate-free front-to-back candidate list over several fine cells."""
-        if len(cells) == 1:
-            return self._fine_ids(cells[0], selection_filter)
-        key = (cells, selection_filter)
+        """Front-to-back candidates of a query visiting ``cells`` and tile range ``tiles``.
+
+        The scalar query's candidates are exactly the global list plus the
+        members of the tiles in its tile range.  This list is that set, less
+        primitives that cannot reach any of the fine cells (``_part_ids``),
+        so it holds every candidate the scalar bounding-box test can accept
+        and none the scalar query would not visit.
+        """
+        key = ("cells", cells, tiles, selection_filter, radius)
         ids = self._front_fine.get(key)
         if ids is None:
-            parts = [self._fine_ids(cell, selection_filter) for cell in cells]
+            low_x, high_x, low_y, high_y = tiles
+            sources = [None] + [
+                (tile_x, tile_y)
+                for tile_y in range(low_y, high_y + 1)
+                for tile_x in range(low_x, high_x + 1)
+                if (tile_x, tile_y) in self._tiles
+            ]
+            parts = [
+                self._part_ids(source, cell, selection_filter, radius)
+                for cell in cells
+                for source in sources
+            ]
             ids = self._cache_ids(key, self._ordered_ids(np.concatenate(parts)))
         return ids
 
     def _fine_cells(
         self, point: Point2, radius: float
-    ) -> Optional[Tuple[Tuple[int, int], ...]]:
-        """Fine cells a front query at ``point`` visits (``None``: off screen)."""
+    ) -> Optional[Tuple[Tuple[Tuple[int, int], ...], Tuple[int, int, int, int]]]:
+        """Fine cells and tile range a front query at ``point`` visits (``None``: off screen)."""
         rect = (point[0] - radius, point[1] - radius, point[0] + radius, point[1] + radius)
-        if self._tile_range(rect) is None:
+        tiles = self._tile_range(rect)
+        if tiles is None:
             return None
         x0, y0, x1, y1 = _rect_normalized(rect)
         fine = self._FINE_CELL
@@ -714,11 +739,12 @@ class ProjectedSelectionIndex:
         high_x = max(0, min(max_x, math.floor(x1 / fine)))
         low_y = max(0, min(max_y, math.floor(y0 / fine)))
         high_y = max(0, min(max_y, math.floor(y1 / fine)))
-        return tuple(
+        cells = tuple(
             (cell_x, cell_y)
             for cell_y in range(low_y, high_y + 1)
             for cell_x in range(low_x, high_x + 1)
         )
+        return cells, tiles
 
     def _front_reference(
         self,
@@ -762,16 +788,16 @@ class ProjectedSelectionIndex:
         results: List[Optional[int]] = [None] * len(points)
         if self._front_exact_only() or type(radius) is not float:
             return [self._front_reference(point, radius, selection_filter) for point in points]
-        groups: Dict[Tuple[Tuple[int, int], ...], List[int]] = {}
+        groups: Dict[Tuple[Tuple[Tuple[int, int], ...], Tuple[int, int, int, int]], List[int]] = {}
         for position, point in enumerate(points):
             if not (_float_exact(point[0]) and _float_exact(point[1])):
                 results[position] = self._front_reference(point, radius, selection_filter)
                 continue
-            cells = self._fine_cells(point, radius)
-            if cells is not None:
-                groups.setdefault(cells, []).append(position)
-        for cells, members in groups.items():
-            ids = self._cells_ids(cells, selection_filter)
+            visit = self._fine_cells(point, radius)
+            if visit is not None:
+                groups.setdefault(visit, []).append(position)
+        for (cells, tiles), members in groups.items():
+            ids = self._cells_ids(cells, tiles, selection_filter, radius)
             total = len(ids)
             unresolved = members
             start, size = 0, 32

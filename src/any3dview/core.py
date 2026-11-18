@@ -384,6 +384,28 @@ class Camera3D:
         if factor > 0.0:
             self.set_orbit(distance=max(self.near * 2.0, self.distance * factor))
 
+    def dolly(self, amount: float, min_distance: float = 0.0) -> None:
+        """Move the camera ``amount`` world units along the view direction.
+
+        Positive ``amount`` moves forward. The step does not depend on the
+        distance to the orbit target: when a forward step would bring the
+        camera closer to the target than ``min_distance`` (at least
+        ``2 * near``), the target is pushed forward with the camera, so
+        repeated steps never slow down or stop.
+        """
+
+        amount = float(amount)
+        if not math.isfinite(amount) or amount == 0.0:
+            return
+        floor = max(self.near * 2.0, float(min_distance))
+        remaining = self.distance - amount
+        if remaining >= floor or amount < 0.0:
+            self.set_orbit(distance=remaining)
+            return
+        _right, _up, forward = self.basis()
+        self.target = self.target + forward * (floor - remaining)
+        self.set_orbit(distance=floor)
+
     def pan_view_pixels(self, delta_x: float, delta_y: float, width: int, height: int) -> None:
         width = max(1, int(width))
         height = max(1, int(height))

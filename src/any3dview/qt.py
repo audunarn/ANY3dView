@@ -316,7 +316,7 @@ class _InputSurface:
 
     def wheelEvent(self, event):
         self.owner._cancel_hover()
-        self.owner._zoom(0.9 ** (event.angleDelta().y()/120))
+        self.owner._wheel_zoom(event.angleDelta().y()/120)
         event.accept()
 
     def keyPressEvent(self, event):

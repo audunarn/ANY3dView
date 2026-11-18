@@ -355,6 +355,7 @@ class RetainedViewer:
         self._mouse = (0, 0)
         self._drag = ""
         self._wheel_finish_after_id: Optional[str] = None
+        self._wheel_zoom_step: Optional[float] = None
         self._selection_press: Optional[tuple[int, int]] = None
         self._selection_current: Optional[tuple[int, int]] = None
         self._selection_points: list[tuple[int, int]] = []
@@ -828,6 +829,65 @@ class RetainedViewer:
         self._renderer.pick_dirty = True
         self._selection_index = None
         self.redraw()
+        self._schedule_wheel_finish()
+
+
+    #: Fraction of the visible scene diagonal moved per wheel notch.
+    wheel_zoom_step_fraction: float = 0.05
+
+    def _wheel_zoom(self, notches: float) -> None:
+        """Fixed-step wheel zoom: ``notches`` > 0 moves the camera forward.
+
+        Each notch moves the camera the same world distance (a fraction of
+        the scene size), independent of how close it is to the orbit
+        target; the target is pushed ahead of the camera when reached.
+        """
+
+        notches = float(notches)
+        if not math.isfinite(notches) or notches == 0.0:
+            return
+        step = getattr(self, "_wheel_zoom_step", None)
+        if step is None:
+            step = self._wheel_zoom_step = self._compute_wheel_zoom_step()
+        self.camera.dolly(notches * step, min_distance=step)
+        self._renderer.pick_dirty = True
+        self._selection_index = None
+        self.redraw()
+        self._schedule_wheel_finish()
+
+
+    def _compute_wheel_zoom_step(self) -> float:
+        scene_low = scene_high = None
+        for entry in self._display_entries().values():
+            handle: MeshHandle = entry["handle"]
+            if handle.removed or not handle.visible:
+                continue
+            for mesh in (handle.mesh, *(chunk for _id, chunk in handle.chunks)):
+                positions = mesh.positions
+                if not len(positions):
+                    continue
+                low, high = positions.min(axis=0), positions.max(axis=0)
+                if mesh.displacements is not None and handle.deformation_scale:
+                    moved = handle.deformation_scale * mesh.displacements
+                    low = low + np.minimum(moved.min(axis=0), 0.0)
+                    high = high + np.maximum(moved.max(axis=0), 0.0)
+                corners = np.array([[x, y, z] for x in (low[0], high[0])
+                                    for y in (low[1], high[1]) for z in (low[2], high[2])])
+                transform = handle.transform
+                world = corners @ transform[:3, :3].T + transform[:3, 3]
+                if scene_low is None:
+                    scene_low, scene_high = world.min(axis=0), world.max(axis=0)
+                else:
+                    scene_low = np.minimum(scene_low, world.min(axis=0))
+                    scene_high = np.maximum(scene_high, world.max(axis=0))
+        diagonal = 0.0 if scene_low is None else float(np.linalg.norm(scene_high - scene_low))
+        if not math.isfinite(diagonal) or diagonal <= 0.0:
+            # Empty scene: fall back to a tenth of the current distance.
+            return max(self.camera.near * 2.0, 0.1 * self.camera.distance)
+        return max(self.camera.near * 2.0, self.wheel_zoom_step_fraction * diagonal)
+
+
+    def _schedule_wheel_finish(self) -> None:
         if self._wheel_finish_after_id is not None:
             try:
                 self.after_cancel(self._wheel_finish_after_id)
@@ -840,6 +900,8 @@ class RetainedViewer:
         """Restore precise screen-space overlays after wheel input settles."""
 
         self._wheel_finish_after_id = None
+        # Re-measure the scene at the start of the next wheel burst.
+        self._wheel_zoom_step = None
         if not self._closed:
             self.redraw()
 

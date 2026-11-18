@@ -605,22 +605,21 @@ class QtWebGPUViewer(QtViewer):
         # Native is explicitly requested separately, after candidate validation.
         return result
 
-    def _projected_selection_index(self):
+    def _make_selection_index(self, projected, width, height):
+        # Invisible display entries are not pickable, and lines pick at their
+        # drawn width.  Adjust the primitives before the one tiled index is
+        # built instead of indexing them twice.
         from dataclasses import replace
         from .selection import ProjectedSelectionIndex
-        index=super()._projected_selection_index()
-        if index is getattr(self,"_webgpu_pick_index",None):return index
         styles={entry["item"]:entry["appearance"] for entry in self._display_entries().values()}
         primitives=[]
-        for primitive in index.primitives:
+        for primitive in projected:
             style=styles.get(primitive.item,{})
             if style.get("opacity",1)<=0:continue
             if primitive.shape=="segment":
                 primitive=replace(primitive,radius=max(primitive.radius,float(style.get("line_width",1))*self.pixel_ratio*.5))
             primitives.append(primitive)
-        result=ProjectedSelectionIndex(primitives,index.width,index.height,tile_size=index.tile_size)
-        self._selection_index=result;self._webgpu_pick_index=result
-        return result
+        return ProjectedSelectionIndex(primitives,width,height)
 
     def query_point(self,x,y,*,selection_filter=None,radius=None,config=None,front_only=False):
         from dataclasses import replace

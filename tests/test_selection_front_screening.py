@@ -12,6 +12,7 @@ filters, off-screen samples and primitives larger than the tile limit.
 import random
 import time
 
+import numpy as np
 import pytest
 
 import any3dview.selection as selection
@@ -257,3 +258,31 @@ def test_retained_front_candidates_are_bounded(monkeypatch):
     fast = _same(primitives, 256, 256, (0, 0, 256, 256))
     assert fast._front_retained <= 20_000
     assert sum(len(ids) for ids in fast._front_fine.values()) == fast._front_retained
+
+
+# Review findings (Codex round 2).
+
+@pytest.mark.parametrize("number", (np.float16, np.float32, np.longdouble, np.int32, np.int64))
+@pytest.mark.parametrize("radius", (0.75, 3.5))
+def test_non_float64_coordinates_keep_scalar_arithmetic(number, radius):
+    triangle = ProjectedPrimitive(0, "polygon", tuple(tuple(number(v) for v in p)
+                                                      for p in ((0, 0), (0, 1000), (1000, 0))), (0.0,) * 3, None)
+    point = ProjectedPrimitive(1, "point", ((800.0, 800.0),), (1.0,), PickBinding.one("p"), radius=radius)
+    _same([triangle, point], 1024, 1024, (795, 795, 805, 805))
+    rng = random.Random(4)
+    cloud = [ProjectedPrimitive(i, "polygon", tuple((number(rng.uniform(0, 200)), number(rng.uniform(0, 200)))
+                                                    for _ in range(3)), (float(i % 5),) * 3,
+                                PickBinding.one(f"f{i}", "geometry.face")) for i in range(150)]
+    _same(cloud, 220, 220, (0, 0, 220, 220))
+
+
+def test_filter_masks_are_bounded():
+    primitives = [ProjectedPrimitive(i, "point", ((5.0, 5.0),), (0.0,), PickBinding.one(f"p{i}:"), radius=3.5)
+                  for i in range(300)]
+    index = ProjectedSelectionIndex(primitives, 16, 16)
+    reference = ReferenceIndex(primitives, 16, 16)
+    for i in range(40):
+        filt = SelectionFilter(key_prefixes=(f"p{i}:",))
+        assert index.rectangle_hits((4, 4, 6, 6), filt, crossing=False, depth=SelectionDepth.VISIBLE) == \
+            reference.rectangle_hits((4, 4, 6, 6), filt, crossing=False, depth=SelectionDepth.VISIBLE)
+        assert len(index._front_opaque) <= ProjectedSelectionIndex._FRONT_FILTER_MASKS

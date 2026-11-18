@@ -406,15 +406,18 @@ def _primitive_crosses_polygon(
 
 
 def _float_exact(value: object) -> bool:
-    """True when ``value`` compares the same in Python and as float64.
+    """True when the scalar predicates on ``value`` compute in float64.
 
-    Floats always do; integers do up to 2**53.  Anything else keeps the
-    scalar path.
+    Python floats (and ``numpy.float64``, a float subclass) do; Python
+    integers do up to 2**53, where float64 conversion is exact.  Lower or
+    higher precision numbers (float16/float32/longdouble, numpy integers that
+    can wrap) keep the scalar path, whose arithmetic the screen cannot mirror.
     """
-    if isinstance(value, (float, np.floating)):
+    kind = type(value)
+    if kind is float or kind is np.float64:
         return True
-    if isinstance(value, (int, np.integer)):
-        return -(2 ** 53) <= int(value) <= 2 ** 53
+    if kind is int or kind is bool:
+        return -(2 ** 53) <= value <= 2 ** 53
     return False
 
 
@@ -510,6 +513,8 @@ class ProjectedSelectionIndex:
     _SCREEN_LIMIT = 1.0e6
     # Retained per-cell candidate ids (8 bytes each) before caches restart.
     _FRONT_CACHE_IDS = 4_000_000
+    # Distinct selection filters whose opacity masks are retained.
+    _FRONT_FILTER_MASKS = 8
 
     def _front_exact_only(self) -> bool:
         """True when screened queries cannot reproduce the scalar order.
@@ -589,6 +594,9 @@ class ProjectedSelectionIndex:
         """
         mask = self._front_opaque.get(selection_filter)
         if mask is None:
+            if len(self._front_opaque) >= self._FRONT_FILTER_MASKS:
+                # One boolean per primitive and filter: keep only a few.
+                self._front_opaque.clear()
             if selection_filter is None:
                 mask = np.ones(len(self.primitives), dtype=bool)
             else:

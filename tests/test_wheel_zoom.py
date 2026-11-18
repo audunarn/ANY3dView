@@ -63,37 +63,87 @@ class _Wheel:
         pass
 
 
-@qt_only
-def test_qt_wheel_zoom_into_one_of_two_far_apart_objects():
+TRI = np.array([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]])
+FACES = np.array([[0, 1, 2]], dtype=np.uint32)
+
+
+@pytest.fixture
+def qt_viewer():
     pytest.importorskip("PySide6")
     from PySide6.QtWidgets import QApplication
-    from any3dview import MeshArrays, create_viewer
+    from any3dview import create_viewer
     from any3dview.qt import QtViewerHostAdapter
 
     app = QApplication.instance() or QApplication([])
     viewer = create_viewer(None, "software", host=QtViewerHostAdapter())
+    viewer.show(); app.processEvents()
     try:
-        viewer.show(); app.processEvents()
-        tri = np.array([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]])
-        faces = np.array([[0, 1, 2]], dtype=np.uint32)
-        viewer.add_mesh_arrays(MeshArrays(tri, faces), cull_backface=False)
-        viewer.add_mesh_arrays(MeshArrays(tri + [1000., 0., 0.], faces), cull_backface=False)
-        viewer.set_top_view(); viewer.fit_to_scene(); app.processEvents()
-        surface = viewer.event_widget
-        step = 0.05 * math.dist((0., 0., 0.), (1001., 1., 0.))
-        start_distance = viewer.camera.distance
-        positions = [viewer.camera.position]
-        notches = int(start_distance / step) + 5  # enough to pass the orbit centre
-        for _ in range(notches):
-            surface.wheelEvent(_Wheel(1))
-            positions.append(viewer.camera.position)
-        moves = [_gap(a, b) for a, b in zip(positions, positions[1:])]
-        # Every notch moves the same distance, also right at the orbit centre.
-        assert moves == pytest.approx([step] * notches, rel=1e-9)
-        assert viewer.camera.distance == pytest.approx(step)
-        # Scrolling back out is the same step.
-        before = viewer.camera.position
-        surface.wheelEvent(_Wheel(-1))
-        assert _gap(before, viewer.camera.position) == pytest.approx(step, rel=1e-9)
+        yield viewer, app
     finally:
         viewer.destroy()
+
+
+def _notch_moves(viewer, notches, count):
+    positions = [viewer.camera.position]
+    for _ in range(count):
+        viewer.event_widget.wheelEvent(_Wheel(notches))
+        positions.append(viewer.camera.position)
+    return [_gap(a, b) for a, b in zip(positions, positions[1:])]
+
+
+@qt_only
+def test_qt_wheel_zoom_into_one_of_two_far_apart_objects(qt_viewer):
+    from any3dview import MeshArrays
+    viewer, app = qt_viewer
+    viewer.add_mesh_arrays(MeshArrays(TRI, FACES), cull_backface=False)
+    viewer.add_mesh_arrays(MeshArrays(TRI + [1000., 0., 0.], FACES), cull_backface=False)
+    viewer.set_top_view(); viewer.fit_to_scene(); app.processEvents()
+    step = 0.05 * math.dist((0., 0., 0.), (1001., 1., 0.))
+    notches = int(viewer.camera.distance / step) + 5  # enough to pass the orbit centre
+    # Every notch moves the same distance, also right at the orbit centre.
+    assert _notch_moves(viewer, 1, notches) == pytest.approx([step] * notches, rel=1e-9)
+    assert viewer.camera.distance == pytest.approx(step)
+    # Scrolling back out is the same step.
+    assert _notch_moves(viewer, -1, 1) == pytest.approx([step], rel=1e-9)
+
+
+@qt_only
+def test_qt_wheel_step_follows_the_latest_fit_and_never_scans_geometry(qt_viewer):
+    from any3dview import MeshArrays
+    viewer, app = qt_viewer
+    big = viewer.add_mesh_arrays(MeshArrays(TRI * 1000.0, FACES), cull_backface=False)
+    viewer.set_top_view(); viewer.fit_to_scene(); app.processEvents()
+
+    def no_scan(*_args, **_kwargs):
+        raise AssertionError("wheel zoom must not scan scene geometry")
+
+    viewer._scene_bounds = no_scan
+    assert _notch_moves(viewer, 1, 2) == pytest.approx([0.05 * 1000.0 * math.sqrt(2)] * 2, rel=1e-9)
+    del viewer._scene_bounds
+    # Replace the scene by a small one and fit again within the same burst.
+    big.remove()
+    viewer.add_mesh_arrays(MeshArrays(TRI * 10.0, FACES), cull_backface=False)
+    viewer.fit_to_scene()
+    viewer._scene_bounds = no_scan
+    assert _notch_moves(viewer, 1, 2) == pytest.approx([0.05 * 10.0 * math.sqrt(2)] * 2, rel=1e-9)
+    # Half notches (high-resolution wheels) move half a step.
+    assert _notch_moves(viewer, -0.5, 1) == pytest.approx([0.025 * 10.0 * math.sqrt(2)], rel=1e-9)
+
+
+@qt_only
+def test_qt_wheel_step_before_any_fit_is_fixed_at_first_use(qt_viewer):
+    viewer, _app = qt_viewer
+    viewer.camera.set_orbit(distance=20.0)
+    assert _notch_moves(viewer, 1, 12) == pytest.approx([2.0] * 12, rel=1e-9)
+
+
+def test_tk_wheel_delta_keeps_fractional_and_multiple_notches():
+    pytest.importorskip("tkinter")
+    from any3dview.gpu.widget import tk_wheel_notches
+
+    assert tk_wheel_notches(120, "win32") == 1.0
+    assert tk_wheel_notches(-240, "win32") == -2.0
+    assert tk_wheel_notches(15, "win32") == pytest.approx(0.125)
+    assert tk_wheel_notches(3, "darwin") == 3.0
+    for bad in (0, None, "x", math.nan):
+        assert tk_wheel_notches(bad, "win32") == 0.0
